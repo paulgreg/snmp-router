@@ -1,2 +1,3 @@
 # snmp-router
-nodejs service to return router’s SNMP data
+
+A node service which collect SNMP data from router & serves JSON endpoints.

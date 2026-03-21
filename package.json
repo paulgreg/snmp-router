@@ -8,18 +8,18 @@
   "main": "src/index.ts",
   "scripts": {
     "dev": "DEBUG=1 tsx --watch src/index",
+    "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
-    "fs-extra": "^11.3.4",
     "net-snmp": "^3.26.1",
     "pug": "^3.0.4",
-    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "devDependencies": {
+    "tsx": "^4.21.0",
     "@types/express": "^5.0.6",
     "@types/net-snmp": "^3.23.0"
   }
