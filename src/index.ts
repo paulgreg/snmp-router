@@ -8,7 +8,7 @@ import {
     getSystemUptime,
     getInterfaceSpeed,
 } from './snmp'
-import { POLL_TIMEOUT, IF_INDEX, DAYS_TO_KEEP } from './env'
+import { POLL_TIMEOUT, IF_INDEX, DAYS_TO_KEEP, PORT } from './env'
 import {
     asciiBar,
     formatBitsPerSecond,
@@ -222,8 +222,11 @@ app.get('/', async (req, res) => {
             )}  OUT [${outBar}] ${formatBitsPerSecond(point.avg_out_bps)}`
         })
 
-        const interfaceName = names[interfaceIndex] || `Interface ${interfaceIndex}`
-        const interfaceStatus = formatInterfaceStatus(statuses[interfaceIndex] || 0)
+        const interfaceName =
+            names[interfaceIndex] || `Interface ${interfaceIndex}`
+        const interfaceStatus = formatInterfaceStatus(
+            statuses[interfaceIndex] || 0
+        )
         const interfaceSpeedInfo = speeds[interfaceIndex]
         const interfaceSpeedLabel = formatSpeed(interfaceSpeedInfo?.speed || 0)
 
@@ -271,6 +274,6 @@ app.get('/', async (req, res) => {
     }
 })
 
-app.listen(3000, () => {
-    console.log('Server running on port 3000')
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`)
 })

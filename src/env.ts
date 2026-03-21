@@ -2,6 +2,7 @@ import dotenv from 'dotenv'
 
 dotenv.config({ quiet: true })
 
+export const PORT = process.env.PORT ?? 6020
 export const DEBUG = Boolean(process.env.DEBUG)
 export const ROUTER = process.env.ROUTER
 export const COMMUNITY = process.env.COMMUNITY
