@@ -70,3 +70,35 @@ export function formatBandwidth(bps: number): string {
     if (bps < 1_000_000_000) return `${(bps / 1_000_000).toFixed(2)} Mbps`
     return `${(bps / 1_000_000_000).toFixed(2)} Gbps`
 }
+
+export function formatBitsPerSecond(bps: number): string {
+    if (!Number.isFinite(bps) || bps <= 0) return '0 bps'
+    const units = ['bps', 'Kbps', 'Mbps', 'Gbps', 'Tbps']
+    let unitIndex = 0
+    let value = bps
+
+    while (value >= 1000 && unitIndex < units.length - 1) {
+        value /= 1000
+        unitIndex++
+    }
+
+    const precision = value >= 100 ? 0 : value >= 10 ? 1 : 2
+    return `${value.toFixed(precision)} ${units[unitIndex]}`
+}
+
+export function asciiBar(
+    value: number,
+    maxValue: number,
+    width: number,
+    useLogScale: boolean = true
+): string {
+    const safeMax = Math.max(1, maxValue)
+    const safeValue = Math.max(0, value)
+    const scaled = useLogScale
+        ? Math.log10(safeValue + 1) / Math.log10(safeMax + 1)
+        : safeValue / safeMax
+
+    const clamped = Math.max(0, Math.min(1, scaled))
+    const barLength = Math.round(clamped * width)
+    return '#'.repeat(barLength).padEnd(width, '.')
+}

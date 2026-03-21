@@ -1,0 +1,87 @@
+doctype html
+html(lang="en")
+  head
+    meta(charset="utf-8")
+    meta(name="viewport" content="width=device-width, initial-scale=1")
+    title= title
+    link(rel="stylesheet" href="/styles.css")
+    script.
+      window.setTimeout(() => {
+        window.location.reload()
+      }, #{pollTimeoutMs})
+  body
+    main
+      header
+        h1= title
+        p.meta Last updated: #{generatedAt}
+        p.meta Router uptime: #{uptime}
+      section.card
+        h2 Current bandwidth
+        if current
+          .grid.two
+            div
+              div.label Inbound
+              div.value #{current.in_bps}
+              div.muted Utilization: #{current.utilization}%
+            div
+              div.label Outbound
+              div.value #{current.out_bps}
+              div.muted Errors/s: #{current.errors_out} | Discards/s: #{current.discards_out}
+            div
+              div.label Errors
+              div.value In #{current.errors_in} / Out #{current.errors_out}
+              div.muted Packets/s: #{current.packets_in} in / #{current.packets_out} out
+            div
+              div.label Discards
+              div.value In #{current.discards_in} / Out #{current.discards_out}
+              div.muted Sample: #{current.timestamp}
+        else
+          p.meta Not enough data yet to calculate bandwidth.
+      section.card
+        h2 Interface
+        .grid.two
+          div
+            div.label Name
+            div.value #{interface.name}
+            div.muted Index: #{interface.index}
+          div
+            div.label Status
+            div.value
+              span.badge #{interface.status}
+          div
+            div.label Speed
+            div.value #{interface.speed}
+            div.muted ifHighSpeed: #{interface.highSpeed} Mbps
+          div
+            div.label Polled speed
+            div.value #{interface.speedMbps} Mbps
+            div.muted From SNMP ifHighSpeed/ifSpeed
+      section.card
+        h2 Daily trend (last #{daysToKeep} days)
+        if dailyLines.length
+          pre= dailyLines.join('\n')
+        else
+          p.meta No daily trend data yet.
+      section.card
+        h2 Weekly trend (older than #{daysToKeep} days)
+        if weeklyLines.length
+          pre= weeklyLines.join('\n')
+        else
+          p.meta No weekly trend data yet.
+      section.card
+        h2 Database
+        ul.list
+          li Total raw points: #{databaseStats.total_raw_points}
+          li Daily aggregates: #{databaseStats.total_daily_points}
+          li Days with data: #{databaseStats.days_with_data}
+          li Points today: #{databaseStats.current_day_points}
+          if databaseStats.oldest_timestamp
+            li Oldest sample: #{databaseStats.oldest_timestamp}
+          if databaseStats.newest_timestamp
+            li Newest sample: #{databaseStats.newest_timestamp}
+      section.card
+        h2 JSON endpoints
+        ul.list
+          each endpoint in endpoints
+            li
+              a(href=endpoint.path)= endpoint.label

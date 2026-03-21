@@ -1,10 +1,33 @@
 import { DatabaseSync } from 'node:sqlite'
-import type { SnmpPollData, BandwidthData } from './types'
+import type {
+    SnmpPollData,
+    BandwidthData,
+    DatabaseStats,
+    DailyTrendPoint,
+    WeeklyTrendPoint,
+    DailyUsagePoint,
+} from './types'
 import { calculateUtilization } from './utils'
-import { IF_INDEX } from './env'
+import { IF_INDEX, DAYS_TO_KEEP } from './env'
 
 const path = './data/router.db'
 const db = new DatabaseSync(path)
+
+const ensureDailyMetricsColumns = () => {
+    const columns = db
+        .prepare('PRAGMA table_info(daily_metrics)')
+        .all() as { name: string }[]
+    const columnNames = new Set(columns.map((col) => col.name))
+
+    const addColumn = (name: string, type: string, defaultValue: number) => {
+        if (columnNames.has(name)) return
+        db.exec(`ALTER TABLE daily_metrics ADD COLUMN ${name} ${type} DEFAULT ${defaultValue}`)
+    }
+
+    addColumn('avg_in_bps', 'REAL', 0)
+    addColumn('avg_out_bps', 'REAL', 0)
+    addColumn('samples', 'INTEGER', 0)
+}
 
 export const initDb = () => {
     db.exec(`
@@ -40,6 +63,8 @@ export const initDb = () => {
             UNIQUE(date, interface_index)
         )
     `)
+
+    ensureDailyMetricsColumns()
 
     // Create indexes for performance
     db.exec(
@@ -167,6 +192,26 @@ export const aggregateDailyData = () => {
     const avgIn = sumIn / dailyData.length
     const avgOut = sumOut / dailyData.length
 
+    const first = dailyData[0]
+    const last = dailyData[dailyData.length - 1]
+    const timeDiffSec =
+        (new Date(last.timestamp).getTime() -
+            new Date(first.timestamp).getTime()) / 1000
+    const avgInBps =
+        timeDiffSec > 0
+            ? Math.max(
+                  0,
+                  ((last.in_octets - first.in_octets) / timeDiffSec) * 8
+              )
+            : 0
+    const avgOutBps =
+        timeDiffSec > 0
+            ? Math.max(
+                  0,
+                  ((last.out_octets - first.out_octets) / timeDiffSec) * 8
+              )
+            : 0
+
     // Sum counters
     const sumErrors = (
         type:
@@ -185,8 +230,8 @@ export const aggregateDailyData = () => {
         INSERT INTO daily_metrics
         (date, interface_index, avg_in_octets, avg_out_octets,
          total_in_errors, total_out_errors, total_in_packets, total_out_packets,
-         total_in_discards, total_out_discards)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         total_in_discards, total_out_discards, avg_in_bps, avg_out_bps, samples)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     insertStmt.run(
@@ -199,7 +244,10 @@ export const aggregateDailyData = () => {
         sumErrors('in_packets'),
         sumErrors('out_packets'),
         sumErrors('in_discards'),
-        sumErrors('out_discards')
+        sumErrors('out_discards'),
+        avgInBps,
+        avgOutBps,
+        dailyData.length
     )
 
     // Clean up raw data older than 7 days
@@ -207,14 +255,232 @@ export const aggregateDailyData = () => {
 }
 
 const cleanUpOldData = () => {
-    const sevenDaysAgo = new Date()
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-    const cutoffDate = sevenDaysAgo.toISOString()
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - DAYS_TO_KEEP)
+    const cutoffDate = cutoff.toISOString()
 
     const deleteStmt = db.prepare(
         'DELETE FROM interface_metrics WHERE timestamp < ?'
     )
     deleteStmt.run(cutoffDate)
+}
+
+export const getDatabaseStats = (interfaceIndex: number): DatabaseStats => {
+    const totalRawPoints = db
+        .prepare(
+            'SELECT COUNT(*) as count FROM interface_metrics WHERE interface_index = ?'
+        )
+        .get(interfaceIndex)?.count as number
+
+    const totalDailyPoints = db
+        .prepare(
+            'SELECT COUNT(*) as count FROM daily_metrics WHERE interface_index = ?'
+        )
+        .get(interfaceIndex)?.count as number
+
+    const daysWithData = db
+        .prepare(
+            'SELECT COUNT(DISTINCT DATE(timestamp)) as count FROM interface_metrics WHERE interface_index = ?'
+        )
+        .get(interfaceIndex)?.count as number
+
+    const currentDayPoints = db
+        .prepare(
+            "SELECT COUNT(*) as count FROM interface_metrics WHERE interface_index = ? AND DATE(timestamp) = DATE('now')"
+        )
+        .get(interfaceIndex)?.count as number
+
+    const range = db
+        .prepare(
+            'SELECT MIN(timestamp) as oldest, MAX(timestamp) as newest FROM interface_metrics WHERE interface_index = ?'
+        )
+        .get(interfaceIndex) as { oldest: string | null; newest: string | null }
+
+    return {
+        total_raw_points: totalRawPoints || 0,
+        total_daily_points: totalDailyPoints || 0,
+        days_with_data: daysWithData || 0,
+        current_day_points: currentDayPoints || 0,
+        oldest_timestamp: range?.oldest ?? null,
+        newest_timestamp: range?.newest ?? null,
+    }
+}
+
+export const getDailyTrend = (
+    interfaceIndex: number,
+    days: number
+): DailyTrendPoint[] => {
+    const stmt = db.prepare(`
+        SELECT
+            DATE(timestamp) as date,
+            MIN(timestamp) as first_timestamp,
+            MAX(timestamp) as last_timestamp,
+            MIN(in_octets) as min_in_octets,
+            MAX(in_octets) as max_in_octets,
+            MIN(out_octets) as min_out_octets,
+            MAX(out_octets) as max_out_octets,
+            SUM(COALESCE(in_errors, 0)) as total_in_errors,
+            SUM(COALESCE(out_errors, 0)) as total_out_errors,
+            SUM(COALESCE(in_packets, 0)) as total_in_packets,
+            SUM(COALESCE(out_packets, 0)) as total_out_packets,
+            SUM(COALESCE(in_discards, 0)) as total_in_discards,
+            SUM(COALESCE(out_discards, 0)) as total_out_discards,
+            COUNT(*) as samples
+        FROM interface_metrics
+        WHERE interface_index = ?
+          AND timestamp >= datetime('now', '-' || ? || ' days')
+        GROUP BY DATE(timestamp)
+        ORDER BY DATE(timestamp) DESC
+    `)
+
+    const rows = stmt.all(interfaceIndex, days) as unknown as Array<{
+        date: string
+        first_timestamp: string
+        last_timestamp: string
+        min_in_octets: number
+        max_in_octets: number
+        min_out_octets: number
+        max_out_octets: number
+        total_in_errors: number
+        total_out_errors: number
+        total_in_packets: number
+        total_out_packets: number
+        total_in_discards: number
+        total_out_discards: number
+        samples: number
+    }>
+
+    return rows.map((row) => {
+        const timeDiffSec =
+            (new Date(row.last_timestamp).getTime() -
+                new Date(row.first_timestamp).getTime()) / 1000
+        const inBps =
+            timeDiffSec > 0
+                ? Math.max(
+                      0,
+                      ((row.max_in_octets - row.min_in_octets) / timeDiffSec) *
+                          8
+                  )
+                : 0
+        const outBps =
+            timeDiffSec > 0
+                ? Math.max(
+                      0,
+                      ((row.max_out_octets - row.min_out_octets) /
+                          timeDiffSec) *
+                          8
+                  )
+                : 0
+
+        return {
+            date: row.date,
+            in_bps: inBps,
+            out_bps: outBps,
+            total_in_errors: row.total_in_errors || 0,
+            total_out_errors: row.total_out_errors || 0,
+            total_in_packets: row.total_in_packets || 0,
+            total_out_packets: row.total_out_packets || 0,
+            total_in_discards: row.total_in_discards || 0,
+            total_out_discards: row.total_out_discards || 0,
+            samples: row.samples || 0,
+        }
+    })
+}
+
+export const getWeeklyTrend = (
+    interfaceIndex: number,
+    cutoffDays: number,
+    limit: number = 8
+): WeeklyTrendPoint[] => {
+    const stmt = db.prepare(`
+        SELECT
+            strftime('%Y-W%W', date) as week,
+            MIN(date) as start_date,
+            MAX(date) as end_date,
+            AVG(avg_in_bps) as avg_in_bps,
+            AVG(avg_out_bps) as avg_out_bps,
+            SUM(total_in_errors) as total_in_errors,
+            SUM(total_out_errors) as total_out_errors,
+            SUM(total_in_packets) as total_in_packets,
+            SUM(total_out_packets) as total_out_packets,
+            SUM(total_in_discards) as total_in_discards,
+            SUM(total_out_discards) as total_out_discards,
+            SUM(samples) as samples
+        FROM daily_metrics
+        WHERE interface_index = ?
+          AND date < date('now', '-' || ? || ' days')
+        GROUP BY strftime('%Y-W%W', date)
+        ORDER BY week DESC
+        LIMIT ?
+    `)
+
+    const rows = stmt.all(interfaceIndex, cutoffDays, limit) as unknown as Array<{
+        week: string
+        start_date: string
+        end_date: string
+        avg_in_bps: number
+        avg_out_bps: number
+        total_in_errors: number
+        total_out_errors: number
+        total_in_packets: number
+        total_out_packets: number
+        total_in_discards: number
+        total_out_discards: number
+        samples: number
+    }>
+
+    return rows.map((row) => ({
+        week: row.week,
+        start_date: row.start_date,
+        end_date: row.end_date,
+        avg_in_bps: row.avg_in_bps || 0,
+        avg_out_bps: row.avg_out_bps || 0,
+        total_in_errors: row.total_in_errors || 0,
+        total_out_errors: row.total_out_errors || 0,
+        total_in_packets: row.total_in_packets || 0,
+        total_out_packets: row.total_out_packets || 0,
+        total_in_discards: row.total_in_discards || 0,
+        total_out_discards: row.total_out_discards || 0,
+        samples: row.samples || 0,
+    }))
+}
+
+export const getDailyUsage = (
+    interfaceIndex: number,
+    days: number
+): DailyUsagePoint[] => {
+    const stmt = db.prepare(`
+        SELECT
+            DATE(timestamp) as date,
+            MIN(in_octets) as min_in_octets,
+            MAX(in_octets) as max_in_octets,
+            MIN(out_octets) as min_out_octets,
+            MAX(out_octets) as max_out_octets
+        FROM interface_metrics
+        WHERE interface_index = ?
+          AND timestamp >= datetime('now', '-' || ? || ' days')
+        GROUP BY DATE(timestamp)
+        ORDER BY DATE(timestamp) ASC
+    `)
+
+    const rows = stmt.all(interfaceIndex, days) as unknown as Array<{
+        date: string
+        min_in_octets: number
+        max_in_octets: number
+        min_out_octets: number
+        max_out_octets: number
+    }>
+
+    return rows.map((row) => {
+        const inBytes = Math.max(0, row.max_in_octets - row.min_in_octets)
+        const outBytes = Math.max(0, row.max_out_octets - row.min_out_octets)
+        return {
+            date: row.date,
+            in_bytes: inBytes,
+            out_bytes: outBytes,
+            total_bytes: inBytes + outBytes,
+        }
+    })
 }
 
 export const setupDailyAggregation = () => {
