@@ -58,8 +58,15 @@ export function formatSpeed(speed: number): string {
     return `${value.toFixed(2)} ${units[unitIndex]}`
 }
 
-export function calculateUtilization(currentBps: number, maxSpeedMbps: number): number {
+export function calculateUtilization(bps: number, maxSpeedMbps: number): number {
     if (maxSpeedMbps <= 0) return 0
     const maxSpeedBps = maxSpeedMbps * 1_000_000
-    return Math.min(100, Math.round((currentBps / maxSpeedBps) * 100))
+    return Math.min(100, Math.round((bps / maxSpeedBps) * 100))
+}
+
+export function formatBandwidth(bps: number): string {
+    if (bps < 1000) return `${bps} bps`
+    if (bps < 1_000_000) return `${(bps / 1000).toFixed(2)} Kbps`
+    if (bps < 1_000_000_000) return `${(bps / 1_000_000).toFixed(2)} Mbps`
+    return `${(bps / 1_000_000_000).toFixed(2)} Gbps`
 }

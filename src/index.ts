@@ -5,10 +5,22 @@ import {
     getAllInterfaceStatuses,
     getAllInterfaceSpeeds,
     getSystemUptime,
+    getInterfaceSpeed,
 } from './snmp'
-import { POLL_TIMEOUT } from './env'
+import { POLL_TIMEOUT, IF_INDEX } from './env'
 import { formatInterfaceStatus, formatUptime, formatSpeed } from './utils'
 import type { SystemStatus } from './types'
+import {
+    initDb,
+    getCurrentBandwidth,
+    getRecentMetrics,
+    setupDailyAggregation,
+} from './db'
+
+initDb()
+setupDailyAggregation()
+
+setInterval(pollSnmp, POLL_TIMEOUT)
 
 const app = express()
 
@@ -60,29 +72,60 @@ app.get('/status', async (req, res) => {
 })
 
 app.get('/current', async (req, res) => {
-    /* 
-  That endpoint should give for the last minute
-   - current bandwidth 
-    bandwidth_in = (current_in - previous_in) / time_interval_seconds
-    bandwidth_out = (current_out - previous_out) / time_interval_seconds
-    bps = bytes_per_sec * 8
-  
-   - errors :
-    1.3.6.1.2.1.2.2.1.14.${IF_INDEX} // ifInErrors
-    1.3.6.1.2.1.2.2.1.20.${IF_INDEX} // ifOutErrors
+    try {
+        // Get interface speed for utilization calculation
+        const interfaceSpeed = await getInterfaceSpeed()
 
-   - Packet counters :
-     1.3.6.1.2.1.2.2.1.11.${IF_INDEX} // ifInUcastPkts
-     1.3.6.1.2.1.2.2.1.17.${IF_INDEX} // ifOutUcastPkts
+        // Get current bandwidth data
+        const bandwidthData = getCurrentBandwidth(
+            Number(IF_INDEX),
+            interfaceSpeed
+        )
 
-   - Discards (silent drops)
-     1.3.6.1.2.1.2.2.1.13.${IF_INDEX} // ifInDiscards
-     1.3.6.1.2.1.2.2.1.19.${IF_INDEX} // ifOutDiscards
-   */
+        if (!bandwidthData) {
+            return res.status(404).json({
+                error: 'Insufficient data for bandwidth calculation',
+            })
+        }
+
+        // Get raw metrics for additional context
+        const recentMetrics = getRecentMetrics(Number(IF_INDEX), 1)
+
+        res.json({
+            timestamp: bandwidthData.timestamp,
+            interface_index: bandwidthData.interface_index,
+            bandwidth: {
+                in_bps: bandwidthData.in_bps,
+                out_bps: bandwidthData.out_bps,
+                in_mbps: bandwidthData.in_bps / 1_000_000,
+                out_mbps: bandwidthData.out_bps / 1_000_000,
+            },
+            utilization: bandwidthData.utilization,
+            rates: {
+                errors_per_sec: {
+                    in: bandwidthData.in_errors_rate,
+                    out: bandwidthData.out_errors_rate,
+                },
+                packets_per_sec: {
+                    in: bandwidthData.in_packets_rate,
+                    out: bandwidthData.out_packets_rate,
+                },
+                discards_per_sec: {
+                    in: bandwidthData.in_discards_rate,
+                    out: bandwidthData.out_discards_rate,
+                },
+            },
+            raw: recentMetrics[0] || null,
+        })
+    } catch (error) {
+        console.error('Current endpoint error:', error)
+        res.status(500).json({
+            error: 'Failed to retrieve current bandwidth',
+            details: error instanceof Error ? error.message : 'Unknown error',
+        })
+    }
 })
 
 app.listen(3000, () => {
     console.log('Server running on port 3000')
 })
-
-setInterval(pollSnmp, POLL_TIMEOUT)
