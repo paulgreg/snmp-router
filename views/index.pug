@@ -9,32 +9,21 @@ html(lang="en")
       let refreshEnabled = true;
       let refreshTimer;
 
-      function startRefresh() {
-        refreshTimer = setTimeout(() => {
-          window.location.reload();
-        }, #{pollInterval});
-      }
-
-      function stopRefresh() {
-        clearTimeout(refreshTimer);
-      }
-
       function toggleRefresh() {
-        refreshEnabled = !refreshEnabled;
-
-        const btn = document.getElementById("refreshBtn");
-
         if (refreshEnabled) {
-          btn.textContent = "auto-refresh 🟢";
-          startRefresh();
-        } else {
+          refreshEnabled = false
+          clearTimeout(refreshTimer);
+          const btn = document.getElementById("refreshBtn");
           btn.textContent = "refresh disabled 🔴";
-          stopRefresh();
+        } else {
+          window.location.reload();
         }
       }
 
       window.onload = () => {
-        startRefresh();
+        refreshTimer = setTimeout(() => {
+          window.location.reload();
+        }, #{pollInterval});
       };
   body
     main
