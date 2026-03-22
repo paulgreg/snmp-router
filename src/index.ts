@@ -7,8 +7,10 @@ import {
     getAllInterfaceSpeeds,
     getSystemUptime,
     getInterfaceSpeed,
+    getCurrentBandwidth,
+    getRecentMetrics,
 } from './snmp'
-import { POLL_TIMEOUT, IF_INDEX, DAYS_TO_KEEP, PORT } from './env'
+import { POLL_INTERVAL, IF_INDEX, DAYS_TO_KEEP, PORT, ONE_SECOND } from './env'
 import {
     asciiBar,
     formatBitsPerSecond,
@@ -19,8 +21,6 @@ import {
 import type { SystemStatus } from './types'
 import {
     initDb,
-    getCurrentBandwidth,
-    getRecentMetrics,
     setupDailyAggregation,
     getDatabaseStats,
     getDailyTrend,
@@ -31,7 +31,8 @@ import {
 initDb()
 setupDailyAggregation()
 
-setInterval(pollSnmp, POLL_TIMEOUT)
+pollSnmp()
+setInterval(pollSnmp, POLL_INTERVAL)
 
 const app = express()
 
@@ -88,14 +89,9 @@ app.get('/status', async (req, res) => {
 
 app.get('/current', async (req, res) => {
     try {
-        // Get interface speed for utilization calculation
         const interfaceSpeed = await getInterfaceSpeed()
 
-        // Get current bandwidth data
-        const bandwidthData = getCurrentBandwidth(
-            Number(IF_INDEX),
-            interfaceSpeed
-        )
+        const bandwidthData = getCurrentBandwidth(interfaceSpeed)
 
         if (!bandwidthData) {
             return res.status(404).json({
@@ -103,8 +99,7 @@ app.get('/current', async (req, res) => {
             })
         }
 
-        // Get raw metrics for additional context
-        const recentMetrics = getRecentMetrics(Number(IF_INDEX), 1)
+        const recentMetrics = getRecentMetrics()
 
         res.json({
             timestamp: bandwidthData.timestamp,
@@ -130,7 +125,7 @@ app.get('/current', async (req, res) => {
                     out: bandwidthData.out_discards_rate,
                 },
             },
-            raw: recentMetrics[0] || null,
+            raw: recentMetrics || null,
         })
     } catch (error) {
         console.error('Current endpoint error:', error)
@@ -184,12 +179,9 @@ app.get('/', async (req, res) => {
                 getInterfaceSpeed(),
             ])
 
-        const bandwidthData = getCurrentBandwidth(
-            interfaceIndex,
-            interfaceSpeed
-        )
+        const bandwidthData = getCurrentBandwidth(interfaceSpeed)
 
-        const recentMetrics = getRecentMetrics(interfaceIndex, 1)
+        const recentMetrics = getRecentMetrics()
         const databaseStats = getDatabaseStats(interfaceIndex)
         const dailyTrend = getDailyTrend(interfaceIndex, DAYS_TO_KEEP)
         const weeklyTrend = getWeeklyTrend(interfaceIndex, DAYS_TO_KEEP, 8)
@@ -233,7 +225,8 @@ app.get('/', async (req, res) => {
         res.render('index', {
             title: 'Router Bandwidth',
             generatedAt: new Date().toISOString(),
-            pollTimeoutMs: POLL_TIMEOUT,
+            pollInterval: POLL_INTERVAL,
+            pollIntervalSeconds: POLL_INTERVAL / 1000,
             uptime: formatUptime(uptime),
             interface: {
                 index: interfaceIndex,
@@ -257,7 +250,7 @@ app.get('/', async (req, res) => {
                       packets_out: bandwidthData.out_packets_rate.toFixed(2),
                   }
                 : null,
-            lastSample: recentMetrics[0] || null,
+            lastSample: recentMetrics || null,
             dailyLines,
             weeklyLines,
             daysToKeep: DAYS_TO_KEEP,
@@ -265,7 +258,7 @@ app.get('/', async (req, res) => {
             endpoints: [
                 { label: 'Status JSON', path: '/status' },
                 { label: 'Current JSON', path: '/current' },
-                { label: 'ESP32 Consumption JSON', path: '/esp32/consumption' },
+                { label: 'esp32 consumption JSON', path: '/esp32/consumption' },
             ],
         })
     } catch (error) {

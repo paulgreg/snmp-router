@@ -6,17 +6,46 @@ html(lang="en")
     title= title
     link(rel="stylesheet" href="/styles.css")
     script.
-      window.setTimeout(() => {
-        window.location.reload()
-      }, #{pollTimeoutMs})
+      let refreshEnabled = true;
+      let refreshTimer;
+
+      function startRefresh() {
+        refreshTimer = setTimeout(() => {
+          window.location.reload();
+        }, #{pollInterval});
+      }
+
+      function stopRefresh() {
+        clearTimeout(refreshTimer);
+      }
+
+      function toggleRefresh() {
+        refreshEnabled = !refreshEnabled;
+
+        const btn = document.getElementById("refreshBtn");
+
+        if (refreshEnabled) {
+          btn.textContent = "auto-refresh 🟢";
+          startRefresh();
+        } else {
+          btn.textContent = "refresh disabled 🔴";
+          stopRefresh();
+        }
+      }
+
+      window.onload = () => {
+        startRefresh();
+      };
   body
     main
       header
         h1= title
-        p.meta Last updated: #{generatedAt}
+        p.meta
+          | Last updated: #{generatedAt}
+          button.refresh#refreshBtn(onclick="toggleRefresh()") auto-refresh 🟢
         p.meta Router uptime: #{uptime}
       section.card
-        h2 Current bandwidth
+        h2 Current bandwidth (#{pollIntervalSeconds} seconds)
         if current
           .grid.two
             div

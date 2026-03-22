@@ -1,33 +1,15 @@
 import { DatabaseSync } from 'node:sqlite'
 import type {
     SnmpPollData,
-    BandwidthData,
     DatabaseStats,
     DailyTrendPoint,
     WeeklyTrendPoint,
     DailyUsagePoint,
 } from './types'
-import { calculateUtilization } from './utils'
 import { IF_INDEX, DAYS_TO_KEEP } from './env'
 
 const path = './data/router.db'
 const db = new DatabaseSync(path)
-
-const ensureDailyMetricsColumns = () => {
-    const columns = db
-        .prepare('PRAGMA table_info(daily_metrics)')
-        .all() as { name: string }[]
-    const columnNames = new Set(columns.map((col) => col.name))
-
-    const addColumn = (name: string, type: string, defaultValue: number) => {
-        if (columnNames.has(name)) return
-        db.exec(`ALTER TABLE daily_metrics ADD COLUMN ${name} ${type} DEFAULT ${defaultValue}`)
-    }
-
-    addColumn('avg_in_bps', 'REAL', 0)
-    addColumn('avg_out_bps', 'REAL', 0)
-    addColumn('samples', 'INTEGER', 0)
-}
 
 export const initDb = () => {
     db.exec(`
@@ -54,17 +36,18 @@ export const initDb = () => {
             interface_index INTEGER NOT NULL,
             avg_in_octets REAL NOT NULL,
             avg_out_octets REAL NOT NULL,
+            avg_in_bps REAL DEFAULT 0,
+            avg_out_bps REAL DEFAULT 0,
             total_in_errors INTEGER DEFAULT 0,
             total_out_errors INTEGER DEFAULT 0,
             total_in_packets INTEGER DEFAULT 0,
             total_out_packets INTEGER DEFAULT 0,
             total_in_discards INTEGER DEFAULT 0,
             total_out_discards INTEGER DEFAULT 0,
+            samples INTEGER DEFAULT 0,
             UNIQUE(date, interface_index)
         )
     `)
-
-    ensureDailyMetricsColumns()
 
     // Create indexes for performance
     db.exec(
@@ -97,66 +80,6 @@ export const insertPollData = (data: SnmpPollData) => {
         data.in_discards,
         data.out_discards
     )
-}
-
-export const getRecentMetrics = (
-    interfaceIndex: number,
-    limit: number = 2
-): SnmpPollData[] => {
-    const stmt = db.prepare(`
-        SELECT * FROM interface_metrics
-        WHERE interface_index = ?
-        ORDER BY timestamp DESC
-        LIMIT ?
-    `)
-    return stmt.all(interfaceIndex, limit) as unknown as SnmpPollData[]
-}
-
-export const getCurrentBandwidth = (
-    interfaceIndex: number,
-    interfaceSpeedMbps: number
-): BandwidthData | null => {
-    const metrics = getRecentMetrics(interfaceIndex, 2)
-    if (metrics.length < 2) return null
-
-    const [current, previous] = metrics
-    const timeDiffMs =
-        new Date(current.timestamp).getTime() -
-        new Date(previous.timestamp).getTime()
-    const timeDiffSec = timeDiffMs / 1000
-
-    if (timeDiffSec <= 0) return null
-
-    // Calculate rates
-    const inBps = ((current.in_octets - previous.in_octets) / timeDiffSec) * 8
-    const outBps =
-        ((current.out_octets - previous.out_octets) / timeDiffSec) * 8
-
-    // Calculate error/packet/discard rates (per second)
-    const calcRate = (curr: number | null, prev: number | null) => {
-        if (curr === null || prev === null) return 0
-        return (curr - prev) / timeDiffSec
-    }
-
-    return {
-        timestamp: current.timestamp,
-        interface_index: interfaceIndex,
-        in_bps: Math.max(0, inBps),
-        out_bps: Math.max(0, outBps),
-        in_errors_rate: calcRate(current.in_errors, previous.in_errors),
-        out_errors_rate: calcRate(current.out_errors, previous.out_errors),
-        in_packets_rate: calcRate(current.in_packets, previous.in_packets),
-        out_packets_rate: calcRate(current.out_packets, previous.out_packets),
-        in_discards_rate: calcRate(current.in_discards, previous.in_discards),
-        out_discards_rate: calcRate(
-            current.out_discards,
-            previous.out_discards
-        ),
-        utilization: calculateUtilization(
-            Math.max(inBps, outBps),
-            interfaceSpeedMbps
-        ),
-    }
 }
 
 export const aggregateDailyData = () => {
@@ -196,7 +119,8 @@ export const aggregateDailyData = () => {
     const last = dailyData[dailyData.length - 1]
     const timeDiffSec =
         (new Date(last.timestamp).getTime() -
-            new Date(first.timestamp).getTime()) / 1000
+            new Date(first.timestamp).getTime()) /
+        1000
     const avgInBps =
         timeDiffSec > 0
             ? Math.max(
@@ -353,7 +277,8 @@ export const getDailyTrend = (
     return rows.map((row) => {
         const timeDiffSec =
             (new Date(row.last_timestamp).getTime() -
-                new Date(row.first_timestamp).getTime()) / 1000
+                new Date(row.first_timestamp).getTime()) /
+            1000
         const inBps =
             timeDiffSec > 0
                 ? Math.max(
@@ -414,7 +339,11 @@ export const getWeeklyTrend = (
         LIMIT ?
     `)
 
-    const rows = stmt.all(interfaceIndex, cutoffDays, limit) as unknown as Array<{
+    const rows = stmt.all(
+        interfaceIndex,
+        cutoffDays,
+        limit
+    ) as unknown as Array<{
         week: string
         start_date: string
         end_date: string

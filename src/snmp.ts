@@ -1,8 +1,15 @@
 import snmp from 'net-snmp'
-import { ROUTER, COMMUNITY, IF_INDEX, DEBUG } from './env'
-import { parseCounter64 } from './utils'
+import {
+    ROUTER,
+    COMMUNITY,
+    IF_INDEX,
+    DEBUG,
+    DB_WRITE_INTERVAL,
+    POLL_INTERVAL,
+} from './env'
+import { calculateUtilization, parseCounter64 } from './utils'
 import { insertPollData } from './db'
-import type { SnmpPollData } from './types'
+import type { BandwidthData, SnmpPollData } from './types'
 
 const OID_IN = `1.3.6.1.2.1.31.1.1.1.6.${IF_INDEX}`
 const OID_OUT = `1.3.6.1.2.1.31.1.1.1.10.${IF_INDEX}`
@@ -209,13 +216,14 @@ export async function getInterfaceSpeed(): Promise<number> {
             return speed / 1_000_000 // Convert bps to Mbps
         }
     } catch (err) {
-        console.error(
-            'Failed to get interface speed, using default 1000 Mbps:',
-            err
-        )
-        return 1000 // Default to 1 Gbps
+        console.error('Failed to get interface speed', err)
+        return 0
     }
 }
+
+let previousPollData: SnmpPollData
+let pollData: SnmpPollData
+let lastDbWriteTime = 0
 
 export async function pollSnmp() {
     try {
@@ -231,7 +239,9 @@ export async function pollSnmp() {
             getSnmpValue(OID_OUT_DISCARDS),
         ])
 
-        const pollData: SnmpPollData = {
+        previousPollData = pollData
+
+        pollData = {
             timestamp: new Date().toISOString(),
             interface_index: Number(IF_INDEX),
             in_octets: results[0].status === 'fulfilled' ? results[0].value : 0,
@@ -253,8 +263,56 @@ export async function pollSnmp() {
 
         if (DEBUG) console.debug(JSON.stringify(pollData))
 
-        insertPollData(pollData)
+        const currentTime = Date.now()
+        if (currentTime - lastDbWriteTime >= DB_WRITE_INTERVAL) {
+            insertPollData(pollData)
+            lastDbWriteTime = currentTime
+        }
     } catch (err) {
         console.error('SNMP polling error:', err)
+    }
+}
+
+export const getRecentMetrics = () => pollData
+
+export const getCurrentBandwidth = (
+    interfaceSpeedMbps: number
+): BandwidthData | null => {
+    if (!previousPollData || !pollData) return null
+
+    const [current, previous] = [pollData, previousPollData]
+    const timeDiffSec = POLL_INTERVAL / 1000
+
+    if (timeDiffSec <= 0) return null
+
+    // Calculate rates
+    const inBps = ((current.in_octets - previous.in_octets) / timeDiffSec) * 8
+    const outBps =
+        ((current.out_octets - previous.out_octets) / timeDiffSec) * 8
+
+    // Calculate error/packet/discard rates (per second)
+    const calcRate = (curr: number | null, prev: number | null) => {
+        if (curr === null || prev === null) return 0
+        return (curr - prev) / timeDiffSec
+    }
+
+    return {
+        timestamp: current.timestamp,
+        interface_index: Number(IF_INDEX),
+        in_bps: Math.max(0, inBps),
+        out_bps: Math.max(0, outBps),
+        in_errors_rate: calcRate(current.in_errors, previous.in_errors),
+        out_errors_rate: calcRate(current.out_errors, previous.out_errors),
+        in_packets_rate: calcRate(current.in_packets, previous.in_packets),
+        out_packets_rate: calcRate(current.out_packets, previous.out_packets),
+        in_discards_rate: calcRate(current.in_discards, previous.in_discards),
+        out_discards_rate: calcRate(
+            current.out_discards,
+            previous.out_discards
+        ),
+        utilization: calculateUtilization(
+            Math.max(inBps, outBps),
+            interfaceSpeedMbps
+        ),
     }
 }
