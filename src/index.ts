@@ -1,16 +1,22 @@
 import express from 'express'
 import path from 'node:path'
 import {
-    pollSnmp,
     getAllInterfaceNames,
     getAllInterfaceStatuses,
     getAllInterfaceSpeeds,
     getSystemUptime,
     getInterfaceSpeed,
     getCurrentBandwidth,
-    getRecentMetrics,
+    pollSnmpAndInsertIntoDb,
+    pollSnmp,
 } from './snmp'
-import { POLL_INTERVAL, IF_INDEX, DAYS_TO_KEEP, PORT, ONE_SECOND } from './env'
+import {
+    IF_INDEX,
+    DAYS_TO_KEEP,
+    PORT,
+    DB_WRITE_INTERVAL_SEC,
+    POLL_INTERVAL_SEC,
+} from './env'
 import {
     asciiBar,
     formatBitsPerSecond,
@@ -19,26 +25,83 @@ import {
     formatUptime,
 } from './utils'
 import type { SystemStatus } from './types'
-import {
-    initDb,
-    setupDailyAggregation,
-    getDatabaseStats,
-    getDailyTrend,
-    getWeeklyTrend,
-    getDailyUsage,
-} from './db'
+import { initDb, getDatabaseStats, getDailyTrend, getDailyUsage } from './db'
 
 initDb()
-setupDailyAggregation()
 
 pollSnmp()
-setInterval(pollSnmp, POLL_INTERVAL)
+pollSnmpAndInsertIntoDb()
+setInterval(pollSnmpAndInsertIntoDb, DB_WRITE_INTERVAL_SEC * 1000)
 
 const app = express()
 
 app.use(express.static(path.join(__dirname, '..', 'public')))
 app.set('view engine', 'pug')
 app.set('views', path.join(__dirname, '..', 'views'))
+
+app.get('/', async (req, res) => {
+    try {
+        const interfaceIndex = Number(IF_INDEX)
+        const [names, statuses, speeds, uptime, interfaceSpeed] =
+            await Promise.all([
+                getAllInterfaceNames(),
+                getAllInterfaceStatuses(),
+                getAllInterfaceSpeeds(),
+                getSystemUptime(),
+                getInterfaceSpeed(),
+            ])
+
+        const databaseStats = getDatabaseStats(interfaceIndex)
+        const dailyTrend = getDailyTrend(interfaceIndex, DAYS_TO_KEEP)
+
+        const maxInBps = Math.max(1, ...dailyTrend.map((point) => point.in_bps))
+        const maxOutBps = Math.max(
+            1,
+            ...dailyTrend.map((point) => point.out_bps)
+        )
+
+        const dailyLines = dailyTrend.map((point) => {
+            const inBar = asciiBar(point.in_bps, maxInBps, 18, true)
+            const outBar = asciiBar(point.out_bps, maxOutBps, 18, true)
+            return `${point.date}  IN [${inBar}] ${formatBitsPerSecond(
+                point.in_bps
+            )}  OUT [${outBar}] ${formatBitsPerSecond(point.out_bps)}`
+        })
+
+        const interfaceName =
+            names[interfaceIndex] || `Interface ${interfaceIndex}`
+        const interfaceStatus = formatInterfaceStatus(
+            statuses[interfaceIndex] || 0
+        )
+        const interfaceSpeedInfo = speeds[interfaceIndex]
+        const interfaceSpeedLabel = formatSpeed(interfaceSpeedInfo?.speed || 0)
+
+        res.render('index', {
+            title: 'Router Bandwidth',
+            generatedAt: new Date().toISOString(),
+            pollIntervalSeconds: POLL_INTERVAL_SEC,
+            uptime: formatUptime(uptime),
+            interface: {
+                index: interfaceIndex,
+                name: interfaceName,
+                status: interfaceStatus,
+                speed: interfaceSpeedLabel,
+                highSpeed: interfaceSpeedInfo?.highSpeed || 0,
+                speedMbps: interfaceSpeed,
+            },
+            dailyLines,
+            daysToKeep: DAYS_TO_KEEP,
+            databaseStats,
+            endpoints: [
+                { label: 'Status JSON', path: '/status' },
+                { label: 'esp32 consumption JSON', path: '/esp32/consumption' },
+            ],
+        })
+    } catch (error) {
+        console.error('Dashboard endpoint error:', error)
+        res.status(500).send('Failed to render dashboard')
+    }
+})
 
 app.get('/status', async (req, res) => {
     try {
@@ -87,55 +150,6 @@ app.get('/status', async (req, res) => {
     }
 })
 
-app.get('/current', async (req, res) => {
-    try {
-        const interfaceSpeed = await getInterfaceSpeed()
-
-        const bandwidthData = getCurrentBandwidth(interfaceSpeed)
-
-        if (!bandwidthData) {
-            return res.status(404).json({
-                error: 'Insufficient data for bandwidth calculation',
-            })
-        }
-
-        const recentMetrics = getRecentMetrics()
-
-        res.json({
-            timestamp: bandwidthData.timestamp,
-            interface_index: bandwidthData.interface_index,
-            bandwidth: {
-                in_bps: bandwidthData.in_bps,
-                out_bps: bandwidthData.out_bps,
-                in_mbps: bandwidthData.in_bps / 1_000_000,
-                out_mbps: bandwidthData.out_bps / 1_000_000,
-            },
-            utilization: bandwidthData.utilization,
-            rates: {
-                errors_per_sec: {
-                    in: bandwidthData.in_errors_rate,
-                    out: bandwidthData.out_errors_rate,
-                },
-                packets_per_sec: {
-                    in: bandwidthData.in_packets_rate,
-                    out: bandwidthData.out_packets_rate,
-                },
-                discards_per_sec: {
-                    in: bandwidthData.in_discards_rate,
-                    out: bandwidthData.out_discards_rate,
-                },
-            },
-            raw: recentMetrics || null,
-        })
-    } catch (error) {
-        console.error('Current endpoint error:', error)
-        res.status(500).json({
-            error: 'Failed to retrieve current bandwidth',
-            details: error instanceof Error ? error.message : 'Unknown error',
-        })
-    }
-})
-
 app.get('/esp32/consumption', async (req, res) => {
     try {
         const interfaceIndex = Number(IF_INDEX)
@@ -167,103 +181,35 @@ app.get('/esp32/consumption', async (req, res) => {
     }
 })
 
-app.get('/', async (req, res) => {
+app.get('/api/bandwidth', async (req, res) => {
     try {
-        const interfaceIndex = Number(IF_INDEX)
-        const [names, statuses, speeds, uptime, interfaceSpeed] =
-            await Promise.all([
-                getAllInterfaceNames(),
-                getAllInterfaceStatuses(),
-                getAllInterfaceSpeeds(),
-                getSystemUptime(),
-                getInterfaceSpeed(),
-            ])
+        const interfaceSpeed = await getInterfaceSpeed()
+        const bandwidthData = await getCurrentBandwidth(interfaceSpeed)
 
-        const bandwidthData = getCurrentBandwidth(interfaceSpeed)
+        if (!bandwidthData) {
+            return res.status(404).json({
+                error: 'Not enough data to calculate bandwidth yet',
+            })
+        }
 
-        const recentMetrics = getRecentMetrics()
-        const databaseStats = getDatabaseStats(interfaceIndex)
-        const dailyTrend = getDailyTrend(interfaceIndex, DAYS_TO_KEEP)
-        const weeklyTrend = getWeeklyTrend(interfaceIndex, DAYS_TO_KEEP, 8)
-
-        const maxInBps = Math.max(
-            1,
-            ...dailyTrend.map((point) => point.in_bps),
-            ...weeklyTrend.map((point) => point.avg_in_bps)
-        )
-        const maxOutBps = Math.max(
-            1,
-            ...dailyTrend.map((point) => point.out_bps),
-            ...weeklyTrend.map((point) => point.avg_out_bps)
-        )
-
-        const dailyLines = dailyTrend.map((point) => {
-            const inBar = asciiBar(point.in_bps, maxInBps, 18, true)
-            const outBar = asciiBar(point.out_bps, maxOutBps, 18, true)
-            return `${point.date}  IN [${inBar}] ${formatBitsPerSecond(
-                point.in_bps
-            )}  OUT [${outBar}] ${formatBitsPerSecond(point.out_bps)}`
-        })
-
-        const weeklyLines = weeklyTrend.map((point) => {
-            const inBar = asciiBar(point.avg_in_bps, maxInBps, 18, true)
-            const outBar = asciiBar(point.avg_out_bps, maxOutBps, 18, true)
-            const label = `${point.week} (${point.start_date}..${point.end_date})`
-            return `${label}  IN [${inBar}] ${formatBitsPerSecond(
-                point.avg_in_bps
-            )}  OUT [${outBar}] ${formatBitsPerSecond(point.avg_out_bps)}`
-        })
-
-        const interfaceName =
-            names[interfaceIndex] || `Interface ${interfaceIndex}`
-        const interfaceStatus = formatInterfaceStatus(
-            statuses[interfaceIndex] || 0
-        )
-        const interfaceSpeedInfo = speeds[interfaceIndex]
-        const interfaceSpeedLabel = formatSpeed(interfaceSpeedInfo?.speed || 0)
-
-        res.render('index', {
-            title: 'Router Bandwidth',
-            generatedAt: new Date().toISOString(),
-            pollInterval: POLL_INTERVAL,
-            pollIntervalSeconds: POLL_INTERVAL / 1000,
-            uptime: formatUptime(uptime),
-            interface: {
-                index: interfaceIndex,
-                name: interfaceName,
-                status: interfaceStatus,
-                speed: interfaceSpeedLabel,
-                highSpeed: interfaceSpeedInfo?.highSpeed || 0,
-                speedMbps: interfaceSpeed,
-            },
-            current: bandwidthData
-                ? {
-                      timestamp: bandwidthData.timestamp,
-                      in_bps: formatBitsPerSecond(bandwidthData.in_bps),
-                      out_bps: formatBitsPerSecond(bandwidthData.out_bps),
-                      utilization: bandwidthData.utilization,
-                      errors_in: bandwidthData.in_errors_rate.toFixed(2),
-                      errors_out: bandwidthData.out_errors_rate.toFixed(2),
-                      discards_in: bandwidthData.in_discards_rate.toFixed(2),
-                      discards_out: bandwidthData.out_discards_rate.toFixed(2),
-                      packets_in: bandwidthData.in_packets_rate.toFixed(2),
-                      packets_out: bandwidthData.out_packets_rate.toFixed(2),
-                  }
-                : null,
-            lastSample: recentMetrics || null,
-            dailyLines,
-            weeklyLines,
-            daysToKeep: DAYS_TO_KEEP,
-            databaseStats,
-            endpoints: [
-                { label: 'Status JSON', path: '/status' },
-                { label: 'Current JSON', path: '/current' },
-                { label: 'esp32 consumption JSON', path: '/esp32/consumption' },
-            ],
+        res.json({
+            timestamp: bandwidthData.timestamp,
+            in_bps: bandwidthData.in_bps,
+            out_bps: bandwidthData.out_bps,
+            in_errors_rate: bandwidthData.in_errors_rate,
+            out_errors_rate: bandwidthData.out_errors_rate,
+            in_packets_rate: bandwidthData.in_packets_rate,
+            out_packets_rate: bandwidthData.out_packets_rate,
+            in_discards_rate: bandwidthData.in_discards_rate,
+            out_discards_rate: bandwidthData.out_discards_rate,
+            utilization: bandwidthData.utilization,
         })
     } catch (error) {
-        console.error('Dashboard endpoint error:', error)
-        res.status(500).send('Failed to render dashboard')
+        console.error('Bandwidth API endpoint error:', error)
+        res.status(500).json({
+            error: 'Failed to retrieve bandwidth data',
+            details: error instanceof Error ? error.message : 'Unknown error',
+        })
     }
 })
 

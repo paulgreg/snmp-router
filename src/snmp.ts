@@ -1,12 +1,5 @@
 import snmp from 'net-snmp'
-import {
-    ROUTER,
-    COMMUNITY,
-    IF_INDEX,
-    DEBUG,
-    DB_WRITE_INTERVAL,
-    POLL_INTERVAL,
-} from './env'
+import { ROUTER, COMMUNITY, IF_INDEX, DEBUG } from './env'
 import { calculateUtilization, parseCounter64 } from './utils'
 import { insertPollData } from './db'
 import type { BandwidthData, SnmpPollData } from './types'
@@ -23,6 +16,10 @@ const OID_OUT_DISCARDS = `1.3.6.1.2.1.2.2.1.19.${IF_INDEX}`
 const session = snmp.createSession(ROUTER, COMMUNITY, {
     version: snmp.Version2c,
 })
+
+// Global variables to track polling history for bandwidth calculation
+let previousPollData: SnmpPollData | null = null
+let currentPollData: SnmpPollData | null = null
 
 export async function getSnmpValue(oid: string): Promise<number> {
     return new Promise((resolve, reject) => {
@@ -152,53 +149,32 @@ export async function getAllInterfaceSpeeds(): Promise<
 
 export async function getSystemUptime(): Promise<number> {
     return new Promise((resolve, reject) => {
-        // Try hrSystemUptime first (more accurate), fall back to sysUpTime
-        const uptimeOIDs = [
-            '1.3.6.1.2.1.25.1.1.0', // hrSystemUptime (HOST-RESOURCES-MIB)
-            '1.3.6.1.2.1.1.3.0', // sysUpTime (fallback)
-        ]
+        const oid = '1.3.6.1.2.1.25.1.1.0' // hrSystemUptime (HOST-RESOURCES-MIB)
 
-        let currentOIDIndex = 0
+        session.get([oid], (err, varbinds) => {
+            if (err) return reject(err)
 
-        const tryNextOID = () => {
-            if (currentOIDIndex >= uptimeOIDs.length) {
-                return reject(new Error('All uptime OIDs failed'))
-            }
+            if (!varbinds)
+                return reject(
+                    new Error(`Uptime OID ${oid} returned no varbinds`)
+                )
 
-            const oid = uptimeOIDs[currentOIDIndex]
-            currentOIDIndex++
+            const vb = varbinds?.[0]
 
-            session.get([oid], (err, varbinds) => {
-                if (err) {
-                    console.log(`Uptime OID ${oid} failed, trying next...`)
-                    tryNextOID()
-                    return
-                }
+            if (!vb) return reject(new Error('empty vb'))
 
-                if (!varbinds) {
-                    console.log(
-                        `Uptime OID ${oid} returned no varbinds, trying next...`
-                    )
-                    tryNextOID()
-                    return
-                }
-
-                const vb = varbinds[0]
-                if (snmp.isVarbindError(vb)) {
-                    console.log(
+            if (snmp.isVarbindError(vb)) {
+                reject(
+                    new Error(
                         `Uptime OID ${oid} returned error: ${snmp.varbindError(
                             vb
-                        )}, trying next...`
+                        )}`
                     )
-                    tryNextOID()
-                    return
-                }
+                )
+            }
 
-                resolve(parseCounter64(vb.value))
-            })
-        }
-
-        tryNextOID()
+            resolve(parseCounter64(vb.value))
+        })
     })
 }
 
@@ -212,6 +188,7 @@ export async function getInterfaceSpeed(): Promise<number> {
             const highSpeed = await getSnmpValue(highSpeedOID)
             return highSpeed // Already in Mbps
         } catch (err) {
+            console.warn(err)
             const speed = await getSnmpValue(speedOID)
             return speed / 1_000_000 // Convert bps to Mbps
         }
@@ -221,13 +198,8 @@ export async function getInterfaceSpeed(): Promise<number> {
     }
 }
 
-let previousPollData: SnmpPollData
-let pollData: SnmpPollData
-let lastDbWriteTime = 0
-
-export async function pollSnmp() {
+async function fetchSnmp() {
     try {
-        // Use Promise.allSettled to handle partial failures
         const results = await Promise.allSettled([
             getSnmpValue(OID_IN),
             getSnmpValue(OID_OUT),
@@ -239,9 +211,7 @@ export async function pollSnmp() {
             getSnmpValue(OID_OUT_DISCARDS),
         ])
 
-        previousPollData = pollData
-
-        pollData = {
+        const pollData = {
             timestamp: new Date().toISOString(),
             interface_index: Number(IF_INDEX),
             in_octets: results[0].status === 'fulfilled' ? results[0].value : 0,
@@ -262,33 +232,49 @@ export async function pollSnmp() {
         }
 
         if (DEBUG) console.debug(JSON.stringify(pollData))
-
-        const currentTime = Date.now()
-        if (currentTime - lastDbWriteTime >= DB_WRITE_INTERVAL) {
-            insertPollData(pollData)
-            lastDbWriteTime = currentTime
-        }
+        return pollData
     } catch (err) {
         console.error('SNMP polling error:', err)
+        return null
     }
 }
 
-export const getRecentMetrics = () => pollData
+export async function pollSnmpAndInsertIntoDb() {
+    const pollData = await fetchSnmp()
+    if (pollData) {
+        insertPollData(pollData)
+    } else {
+        console.error('no data inserted', new Date().toISOString())
+    }
+}
 
-export const getCurrentBandwidth = (
+export async function pollSnmp() {
+    previousPollData = currentPollData
+    currentPollData = await fetchSnmp()
+}
+
+export async function getCurrentBandwidth(
     interfaceSpeedMbps: number
-): BandwidthData | null => {
-    if (!previousPollData || !pollData) return null
+): Promise<BandwidthData | null> {
+    await pollSnmp()
+    if (!previousPollData || !currentPollData) return null
 
-    const [current, previous] = [pollData, previousPollData]
-    const timeDiffSec = POLL_INTERVAL / 1000
+    // Calculate actual time difference between polls using timestamps
+    const currentTime = new Date(currentPollData.timestamp).getTime()
+    const previousTime = new Date(previousPollData.timestamp).getTime()
+    const timeDiffSec = (currentTime - previousTime) / 1000
 
     if (timeDiffSec <= 0) return null
 
     // Calculate rates
-    const inBps = ((current.in_octets - previous.in_octets) / timeDiffSec) * 8
+    const inBps =
+        ((currentPollData.in_octets - previousPollData.in_octets) /
+            timeDiffSec) *
+        8
     const outBps =
-        ((current.out_octets - previous.out_octets) / timeDiffSec) * 8
+        ((currentPollData.out_octets - previousPollData.out_octets) /
+            timeDiffSec) *
+        8
 
     // Calculate error/packet/discard rates (per second)
     const calcRate = (curr: number | null, prev: number | null) => {
@@ -297,18 +283,33 @@ export const getCurrentBandwidth = (
     }
 
     return {
-        timestamp: current.timestamp,
+        timestamp: currentPollData.timestamp,
         interface_index: Number(IF_INDEX),
         in_bps: Math.max(0, inBps),
         out_bps: Math.max(0, outBps),
-        in_errors_rate: calcRate(current.in_errors, previous.in_errors),
-        out_errors_rate: calcRate(current.out_errors, previous.out_errors),
-        in_packets_rate: calcRate(current.in_packets, previous.in_packets),
-        out_packets_rate: calcRate(current.out_packets, previous.out_packets),
-        in_discards_rate: calcRate(current.in_discards, previous.in_discards),
+        in_errors_rate: calcRate(
+            currentPollData.in_errors,
+            previousPollData.in_errors
+        ),
+        out_errors_rate: calcRate(
+            currentPollData.out_errors,
+            previousPollData.out_errors
+        ),
+        in_packets_rate: calcRate(
+            currentPollData.in_packets,
+            previousPollData.in_packets
+        ),
+        out_packets_rate: calcRate(
+            currentPollData.out_packets,
+            previousPollData.out_packets
+        ),
+        in_discards_rate: calcRate(
+            currentPollData.in_discards,
+            previousPollData.in_discards
+        ),
         out_discards_rate: calcRate(
-            current.out_discards,
-            previous.out_discards
+            currentPollData.out_discards,
+            previousPollData.out_discards
         ),
         utilization: calculateUtilization(
             Math.max(inBps, outBps),

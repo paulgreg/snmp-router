@@ -7,7 +7,7 @@ export interface InterfaceStatus {
     name: string
     status: string
     speed: string
-    highSpeed: number // Mbps
+    highSpeed: number
     utilization?: number
 }
 
@@ -59,7 +59,6 @@ export interface BandwidthData {
 
 export interface DatabaseStats {
     total_raw_points: number
-    total_daily_points: number
     days_with_data: number
     current_day_points: number
     oldest_timestamp: string | null
@@ -70,21 +69,6 @@ export interface DailyTrendPoint {
     date: string
     in_bps: number
     out_bps: number
-    total_in_errors: number
-    total_out_errors: number
-    total_in_packets: number
-    total_out_packets: number
-    total_in_discards: number
-    total_out_discards: number
-    samples: number
-}
-
-export interface WeeklyTrendPoint {
-    week: string
-    start_date: string
-    end_date: string
-    avg_in_bps: number
-    avg_out_bps: number
     total_in_errors: number
     total_out_errors: number
     total_in_packets: number
