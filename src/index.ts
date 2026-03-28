@@ -36,7 +36,7 @@ setInterval(pollSnmpAndInsertIntoDb, DB_WRITE_INTERVAL_SEC * 1000)
 const app = express()
 
 app.use(express.static(path.join(__dirname, '..', 'public')))
-app.set('view engine', 'pug')
+app.set('view engine', 'ejs')
 app.set('views', path.join(__dirname, '..', 'views'))
 
 app.get('/', async (req, res) => {
