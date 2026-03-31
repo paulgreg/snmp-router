@@ -17,25 +17,33 @@
             <section class="card current-bandwidth">
                 <h2>Current bandwidth (<%= pollIntervalSeconds %> seconds)</h2>
                 <div class="grid two">
+                    <div class="utilization">
+                        <div class="label">Utilization</div>
+                        <div class="value">0</div>
+                    </div>
                     <div class="inbound">
                         <div class="label">Inbound</div>
                         <div class="value">0</div>
-                        <div class="muted">Utilization: 0%</div>
                     </div>
                     <div class="outbound">
                         <div class="label">Outbound</div>
                         <div class="value">0</div>
-                        <div class="muted">Errors/s: 0 | Discards/s: 0</div>
+                    </div>
+                    <div class="packets">
+                        <div class="label">Packets/s</div>
+                        <div class="value">In 0 / Out 0</div>
                     </div>
                     <div class="errors">
                         <div class="label">Errors</div>
                         <div class="value">In 0 / Out 0</div>
-                        <div class="muted">Packets/s: 0 in / 0 out</div>
                     </div>
                     <div class="discards">
                         <div class="label">Discards</div>
                         <div class="value">In 0 / Out 0</div>
-                        <div class="muted sample">Sample: 0</div>
+                    </div>
+                    <div class="sample">
+                        <div class="label">Sample</div>
+                        <div class="value"></div>
                     </div>
                 </div>
             </section>
@@ -56,21 +64,15 @@
                     <div>
                         <div class="label">Speed</div>
                         <div class="value"><%= interface.speed %></div>
-                        <div class="muted">
-                            ifHighSpeed: <%= interface.highSpeed %> Mbps
-                        </div>
-                    </div>
-                    <div>
-                        <div class="label">Polled speed</div>
-                        <div class="value"><%= interface.speedMbps %> Mbps</div>
-                        <div class="muted">From SNMP ifHighSpeed/ifSpeed</div>
                     </div>
                 </div>
             </section>
             <section class="card">
                 <h2>Daily trend (last <%= daysToKeep %> days)</h2>
                 <% if (dailyLines.length) { %>
-                <pre><%= dailyLines.join('\n') %></pre>
+                <div class="trend-container">
+                    <pre><%= dailyLines.join('\n') %></pre>
+                </div>
                 <% } else { %>
                 <p class="meta">No daily trend data yet.</p>
                 <% } %>
@@ -109,31 +111,23 @@
         </main>
 
         <script type="text/javascript">
-            function formatBitsPerSecond(bps) {
-              if (bps < 1000) return bps.toFixed(2) + ' bps'
-              if (bps < 1000000) return (bps / 1000).toFixed(2) + ' Kbps'
-              if (bps < 1000000000) return (bps / 1000000).toFixed(2) + ' Mbps'
-              return (bps / 1000000000).toFixed(2) + ' Gbps'
-            }
+            <%- formatBandwidth %>
 
             function updateBandwidthUI(data) {
               const inBoundEl = document.querySelector('.current-bandwidth .inbound .value')
               const outBoundEl = document.querySelector('.current-bandwidth .outbound .value')
-              const utilizationEl = document.querySelector('.current-bandwidth .inbound .muted')
-              const errorsEl = document.querySelector('.current-bandwidth .outbound .muted')
-              const errorsDetailEl = document.querySelector('.current-bandwidth .errors .value')
-              const packetsEl = document.querySelector('.current-bandwidth .errors .muted')
+              const utilizationEl = document.querySelector('.current-bandwidth .utilization .value')
+              const errorsEl = document.querySelector('.current-bandwidth .errors .value')
+              const packetsEl = document.querySelector('.current-bandwidth .packets .value')
               const discardsEl = document.querySelector('.current-bandwidth .discards .value')
-              const discardsDetailEl = document.querySelector('.current-bandwidth .discards .muted')
-              const sampleEl = document.querySelector('.current-bandwidth .sample')
-              if (inBoundEl) inBoundEl.textContent = formatBitsPerSecond(data.in_bps)
-              if (outBoundEl) outBoundEl.textContent = formatBitsPerSecond(data.out_bps)
-              if (utilizationEl) utilizationEl.textContent = 'Utilization: ' + data.utilization.toFixed(2) + '%'
-              if (errorsEl) errorsEl.textContent = 'Errors/s: ' + data.out_errors_rate.toFixed(2) + ' | Discards/s: ' + data.out_discards_rate.toFixed(2)
-              if (errorsDetailEl) errorsDetailEl.textContent = 'In ' + data.in_errors_rate.toFixed(2) + ' / Out ' + data.out_errors_rate.toFixed(2)
-              if (packetsEl) packetsEl.textContent = 'Packets/s: ' + data.in_packets_rate.toFixed(2) + ' in / ' + data.out_packets_rate.toFixed(2)
-              if (discardsEl) discardsEl.textContent = 'In ' + data.in_discards_rate.toFixed(2) + ' / Out ' + data.out_discards_rate.toFixed(2)
-              if (sampleEl) sampleEl.textContent = 'Sample: ' + new Date(data.timestamp).toLocaleString()
+              const sampleEl = document.querySelector('.current-bandwidth .sample .value')
+              if (inBoundEl) inBoundEl.textContent = formatBandwidth(data.in_bps)
+              if (outBoundEl) outBoundEl.textContent = formatBandwidth(data.out_bps)
+              if (utilizationEl) utilizationEl.textContent = data.utilization.toFixed(2) + '%'
+              if (errorsEl) errorsEl.textContent = 'In ' + data.in_errors_rate.toFixed(0) + ' / Out ' + data.out_errors_rate.toFixed(0)
+              if (packetsEl) packetsEl.textContent = 'In ' + data.in_packets_rate.toFixed(0) + ' / Out ' + data.out_packets_rate.toFixed(0)
+              if (discardsEl) discardsEl.textContent = 'In ' + data.in_discards_rate.toFixed(0) + ' / Out ' + data.out_discards_rate.toFixed(0)
+              if (sampleEl) sampleEl.textContent = new Date(data.timestamp).toLocaleString()
             }
 
             async function fetchBandwidthData() {

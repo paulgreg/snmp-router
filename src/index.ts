@@ -19,13 +19,13 @@ import {
 } from './env'
 import {
     asciiBar,
-    formatBitsPerSecond,
+    formatBandwidth,
     formatInterfaceStatus,
     formatSpeed,
     formatUptime,
 } from './utils'
 import type { SystemStatus } from './types'
-import { initDb, getDatabaseStats, getDailyTrend, getDailyUsage } from './db'
+import { initDb, getDatabaseStats, getDailyMetrics } from './db'
 
 initDb()
 
@@ -52,20 +52,34 @@ app.get('/', async (req, res) => {
             ])
 
         const databaseStats = getDatabaseStats(interfaceIndex)
-        const dailyTrend = getDailyTrend(interfaceIndex, DAYS_TO_KEEP)
+        const dailyMetrics = getDailyMetrics(
+            interfaceIndex,
+            DAYS_TO_KEEP
+        ).reverse()
 
-        const maxInBps = Math.max(1, ...dailyTrend.map((point) => point.in_bps))
-        const maxOutBps = Math.max(
+        const maxInBytes = Math.max(
             1,
-            ...dailyTrend.map((point) => point.out_bps)
+            ...dailyMetrics.map((point) => point.total_in_bytes)
+        )
+        const maxOutBytes = Math.max(
+            1,
+            ...dailyMetrics.map((point) => point.total_out_bytes)
         )
 
-        const dailyLines = dailyTrend.map((point) => {
-            const inBar = asciiBar(point.in_bps, maxInBps, 18, true)
-            const outBar = asciiBar(point.out_bps, maxOutBps, 18, true)
-            return `${point.date}  IN [${inBar}] ${formatBitsPerSecond(
-                point.in_bps
-            )}  OUT [${outBar}] ${formatBitsPerSecond(point.out_bps)}`
+        const dailyLines = dailyMetrics.map((point) => {
+            const totalInBytes = point.total_in_bytes || 0
+            const totalOutBytes = point.total_out_bytes || 0
+            const totalInMb = totalInBytes / (1024 * 1024)
+            const totalOutMb = totalOutBytes / (1024 * 1024)
+
+            const inBar = asciiBar(totalInBytes, maxInBytes, 18, true)
+            const outBar = asciiBar(totalOutBytes, maxOutBytes, 18, true)
+
+            return `${point.date}  IN [${inBar}] ${totalInMb
+                .toFixed(0)
+                .padStart(10, '_')} MB  OUT [${outBar}] ${totalOutMb
+                .toFixed(0)
+                .padStart(10, '_')} MB`
         })
 
         const interfaceName =
@@ -93,9 +107,10 @@ app.get('/', async (req, res) => {
             daysToKeep: DAYS_TO_KEEP,
             databaseStats,
             endpoints: [
-                { label: 'Status JSON', path: '/status' },
-                { label: 'esp32 consumption JSON', path: '/esp32/consumption' },
+                { label: 'Status JSON API', path: '/api/status' },
+                { label: 'Consumption JSON API', path: '/api/consumption' },
             ],
+            formatBandwidth: formatBandwidth.toString(),
         })
     } catch (error) {
         console.error('Dashboard endpoint error:', error)
@@ -103,7 +118,72 @@ app.get('/', async (req, res) => {
     }
 })
 
-app.get('/status', async (req, res) => {
+app.get('/api/consumption', async (req, res) => {
+    try {
+        const interfaceIndex = Number(IF_INDEX)
+        const dailyMetrics = getDailyMetrics(interfaceIndex, DAYS_TO_KEEP)
+        const start = dailyMetrics[0]?.date ?? null
+        const end = dailyMetrics[dailyMetrics.length - 1]?.date ?? null
+
+        res.json({
+            start,
+            end,
+            quality: 'BRUT',
+            reading_type: {
+                unit: 'MB',
+                measurement_kind: 'data',
+                aggregate: 'sum',
+                measuring_period: 'P1D',
+            },
+            interval_reading: dailyMetrics.map((point) => ({
+                value: Math.round(
+                    point.total_in_bytes / (1024 * 1024)
+                ).toString(),
+                date: point.date,
+            })),
+        })
+    } catch (error) {
+        console.error('ESP32 consumption endpoint error:', error)
+        res.status(500).json({
+            error: 'Failed to retrieve consumption data',
+            details: error instanceof Error ? error.message : 'Unknown error',
+        })
+    }
+})
+
+app.get('/api/bandwidth', async (req, res) => {
+    try {
+        const interfaceSpeed = await getInterfaceSpeed()
+        const bandwidthData = await getCurrentBandwidth(interfaceSpeed)
+
+        if (!bandwidthData) {
+            return res.status(404).json({
+                error: 'Not enough data to calculate bandwidth yet',
+            })
+        }
+
+        res.json({
+            timestamp: bandwidthData.timestamp,
+            in_bps: bandwidthData.in_bps,
+            out_bps: bandwidthData.out_bps,
+            in_errors_rate: bandwidthData.in_errors_rate,
+            out_errors_rate: bandwidthData.out_errors_rate,
+            in_packets_rate: bandwidthData.in_packets_rate,
+            out_packets_rate: bandwidthData.out_packets_rate,
+            in_discards_rate: bandwidthData.in_discards_rate,
+            out_discards_rate: bandwidthData.out_discards_rate,
+            utilization: bandwidthData.utilization,
+        })
+    } catch (error) {
+        console.error('Bandwidth API endpoint error:', error)
+        res.status(500).json({
+            error: 'Failed to retrieve bandwidth data',
+            details: error instanceof Error ? error.message : 'Unknown error',
+        })
+    }
+})
+
+app.get('/api/status', async (req, res) => {
     try {
         const [names, statuses, speeds, uptime] = await Promise.all([
             getAllInterfaceNames(),
@@ -145,69 +225,6 @@ app.get('/status', async (req, res) => {
         console.error('Status endpoint error:', error)
         res.status(500).json({
             error: 'Failed to retrieve router status',
-            details: error instanceof Error ? error.message : 'Unknown error',
-        })
-    }
-})
-
-app.get('/esp32/consumption', async (req, res) => {
-    try {
-        const interfaceIndex = Number(IF_INDEX)
-        const dailyUsage = getDailyUsage(interfaceIndex, DAYS_TO_KEEP)
-        const start = dailyUsage[0]?.date ?? null
-        const end = dailyUsage[dailyUsage.length - 1]?.date ?? null
-
-        res.json({
-            start,
-            end,
-            quality: 'BRUT',
-            reading_type: {
-                unit: 'Mb',
-                measurement_kind: 'data',
-                aggregate: 'sum',
-                measuring_period: 'P1D',
-            },
-            interval_reading: dailyUsage.map((point) => ({
-                value: ((point.in_bytes * 8) / 1_000_000).toFixed(3),
-                date: point.date,
-            })),
-        })
-    } catch (error) {
-        console.error('ESP32 consumption endpoint error:', error)
-        res.status(500).json({
-            error: 'Failed to retrieve consumption data',
-            details: error instanceof Error ? error.message : 'Unknown error',
-        })
-    }
-})
-
-app.get('/api/bandwidth', async (req, res) => {
-    try {
-        const interfaceSpeed = await getInterfaceSpeed()
-        const bandwidthData = await getCurrentBandwidth(interfaceSpeed)
-
-        if (!bandwidthData) {
-            return res.status(404).json({
-                error: 'Not enough data to calculate bandwidth yet',
-            })
-        }
-
-        res.json({
-            timestamp: bandwidthData.timestamp,
-            in_bps: bandwidthData.in_bps,
-            out_bps: bandwidthData.out_bps,
-            in_errors_rate: bandwidthData.in_errors_rate,
-            out_errors_rate: bandwidthData.out_errors_rate,
-            in_packets_rate: bandwidthData.in_packets_rate,
-            out_packets_rate: bandwidthData.out_packets_rate,
-            in_discards_rate: bandwidthData.in_discards_rate,
-            out_discards_rate: bandwidthData.out_discards_rate,
-            utilization: bandwidthData.utilization,
-        })
-    } catch (error) {
-        console.error('Bandwidth API endpoint error:', error)
-        res.status(500).json({
-            error: 'Failed to retrieve bandwidth data',
             details: error instanceof Error ? error.message : 'Unknown error',
         })
     }

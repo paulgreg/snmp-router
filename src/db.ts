@@ -1,10 +1,5 @@
 import { DatabaseSync } from 'node:sqlite'
-import type {
-    SnmpPollData,
-    DatabaseStats,
-    DailyTrendPoint,
-    DailyUsagePoint,
-} from './types'
+import type { SnmpPollData, DatabaseStats } from './types'
 import { DAYS_TO_KEEP } from './env'
 
 const path = './data/router.db'
@@ -28,34 +23,22 @@ export const initDb = () => {
         )
     `)
 
-    db.exec(`
-        CREATE TABLE IF NOT EXISTS daily_metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date DATE NOT NULL,
-            interface_index INTEGER NOT NULL,
-            avg_in_octets REAL NOT NULL,
-            avg_out_octets REAL NOT NULL,
-            avg_in_bps REAL DEFAULT 0,
-            avg_out_bps REAL DEFAULT 0,
-            total_in_errors INTEGER DEFAULT 0,
-            total_out_errors INTEGER DEFAULT 0,
-            total_in_packets INTEGER DEFAULT 0,
-            total_out_packets INTEGER DEFAULT 0,
-            total_in_discards INTEGER DEFAULT 0,
-            total_out_discards INTEGER DEFAULT 0,
-            samples INTEGER DEFAULT 0,
-            UNIQUE(date, interface_index)
-        )
-    `)
-
     db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON interface_metrics(timestamp)'
-    )
-    db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_metrics_interface ON interface_metrics(interface_index)'
+        'CREATE INDEX IF NOT EXISTS idx_metrics_interface_timestamp ON interface_metrics(interface_index, timestamp)'
     )
 
     console.info('Database initialized successfully')
+}
+
+const cleanUpOldData = () => {
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - DAYS_TO_KEEP)
+    const cutoffDate = cutoff.toISOString()
+
+    const deleteStmt = db.prepare(
+        'DELETE FROM interface_metrics WHERE timestamp < ?'
+    )
+    deleteStmt.run(cutoffDate)
 }
 
 export const insertPollData = (data: SnmpPollData) => {
@@ -76,17 +59,7 @@ export const insertPollData = (data: SnmpPollData) => {
         data.in_discards,
         data.out_discards
     )
-}
-
-const cleanUpOldData = () => {
-    const cutoff = new Date()
-    cutoff.setDate(cutoff.getDate() - DAYS_TO_KEEP)
-    const cutoffDate = cutoff.toISOString()
-
-    const deleteStmt = db.prepare(
-        'DELETE FROM interface_metrics WHERE timestamp < ?'
-    )
-    deleteStmt.run(cutoffDate)
+    cleanUpOldData()
 }
 
 export const getDatabaseStats = (interfaceIndex: number): DatabaseStats => {
@@ -123,15 +96,24 @@ export const getDatabaseStats = (interfaceIndex: number): DatabaseStats => {
     }
 }
 
-export const getDailyTrend = (
+export const getDailyMetrics = (
     interfaceIndex: number,
     days: number
-): DailyTrendPoint[] => {
+): Array<{
+    date: string
+    total_in_bytes: number
+    total_out_bytes: number
+    total_in_errors: number
+    total_out_errors: number
+    total_in_packets: number
+    total_out_packets: number
+    total_in_discards: number
+    total_out_discards: number
+    samples: number
+}> => {
     const stmt = db.prepare(`
         SELECT
             DATE(timestamp) as date,
-            MIN(timestamp) as first_timestamp,
-            MAX(timestamp) as last_timestamp,
             MIN(in_octets) as min_in_octets,
             MAX(in_octets) as max_in_octets,
             MIN(out_octets) as min_out_octets,
@@ -147,13 +129,11 @@ export const getDailyTrend = (
         WHERE interface_index = ?
           AND timestamp >= datetime('now', '-' || ? || ' days')
         GROUP BY DATE(timestamp)
-        ORDER BY DATE(timestamp) DESC
+        ORDER BY DATE(timestamp) ASC
     `)
 
     const rows = stmt.all(interfaceIndex, days) as unknown as Array<{
         date: string
-        first_timestamp: string
-        last_timestamp: string
         min_in_octets: number
         max_in_octets: number
         min_out_octets: number
@@ -168,32 +148,17 @@ export const getDailyTrend = (
     }>
 
     return rows.map((row) => {
-        const timeDiffSec =
-            (new Date(row.last_timestamp).getTime() -
-                new Date(row.first_timestamp).getTime()) /
-            1000
-        const inBps =
-            timeDiffSec > 0
-                ? Math.max(
-                      0,
-                      ((row.max_in_octets - row.min_in_octets) / timeDiffSec) *
-                          8
-                  )
-                : 0
-        const outBps =
-            timeDiffSec > 0
-                ? Math.max(
-                      0,
-                      ((row.max_out_octets - row.min_out_octets) /
-                          timeDiffSec) *
-                          8
-                  )
-                : 0
+        // Calculate total bytes for the day
+        const totalInBytes = Math.max(0, row.max_in_octets - row.min_in_octets)
+        const totalOutBytes = Math.max(
+            0,
+            row.max_out_octets - row.min_out_octets
+        )
 
         return {
             date: row.date,
-            in_bps: inBps,
-            out_bps: outBps,
+            total_in_bytes: totalInBytes,
+            total_out_bytes: totalOutBytes,
             total_in_errors: row.total_in_errors || 0,
             total_out_errors: row.total_out_errors || 0,
             total_in_packets: row.total_in_packets || 0,
@@ -201,44 +166,6 @@ export const getDailyTrend = (
             total_in_discards: row.total_in_discards || 0,
             total_out_discards: row.total_out_discards || 0,
             samples: row.samples || 0,
-        }
-    })
-}
-
-export const getDailyUsage = (
-    interfaceIndex: number,
-    days: number
-): DailyUsagePoint[] => {
-    const stmt = db.prepare(`
-        SELECT
-            DATE(timestamp) as date,
-            MIN(in_octets) as min_in_octets,
-            MAX(in_octets) as max_in_octets,
-            MIN(out_octets) as min_out_octets,
-            MAX(out_octets) as max_out_octets
-        FROM interface_metrics
-        WHERE interface_index = ?
-          AND timestamp >= datetime('now', '-' || ? || ' days')
-        GROUP BY DATE(timestamp)
-        ORDER BY DATE(timestamp) ASC
-    `)
-
-    const rows = stmt.all(interfaceIndex, days) as unknown as Array<{
-        date: string
-        min_in_octets: number
-        max_in_octets: number
-        min_out_octets: number
-        max_out_octets: number
-    }>
-
-    return rows.map((row) => {
-        const inBytes = Math.max(0, row.max_in_octets - row.min_in_octets)
-        const outBytes = Math.max(0, row.max_out_octets - row.min_out_octets)
-        return {
-            date: row.date,
-            in_bytes: inBytes,
-            out_bytes: outBytes,
-            total_bytes: inBytes + outBytes,
         }
     })
 }
