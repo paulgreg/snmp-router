@@ -64,7 +64,7 @@ export function calculateUtilization(
 }
 
 export function formatBandwidth(bps: number): string {
-    if (bps < 1000) return `${bps} bps`
+    if (bps < 1000) return `${bps.toFixed(0)} bps`
     if (bps < 1_000_000) return `${(bps / 1000).toFixed(2)} Kbps`
     if (bps < 1_000_000_000) return `${(bps / 1_000_000).toFixed(2)} Mbps`
     return `${(bps / 1_000_000_000).toFixed(2)} Gbps`
