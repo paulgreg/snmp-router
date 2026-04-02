@@ -72,8 +72,8 @@ app.get('/', async (req, res) => {
             const totalInMb = totalInBytes / (1024 * 1024)
             const totalOutMb = totalOutBytes / (1024 * 1024)
 
-            const inBar = asciiBar(totalInBytes, maxInBytes, 18, true)
-            const outBar = asciiBar(totalOutBytes, maxOutBytes, 18, true)
+            const inBar = asciiBar(totalInBytes, maxInBytes, 18)
+            const outBar = asciiBar(totalOutBytes, maxOutBytes, 18)
 
             return `${point.date}  IN [${inBar}] ${totalInMb
                 .toFixed(0)

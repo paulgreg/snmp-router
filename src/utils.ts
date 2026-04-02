@@ -73,14 +73,11 @@ export function formatBandwidth(bps: number): string {
 export function asciiBar(
     value: number,
     maxValue: number,
-    width: number,
-    useLogScale: boolean = true
+    width: number
 ): string {
     const safeMax = Math.max(1, maxValue)
     const safeValue = Math.max(0, value)
-    const scaled = useLogScale
-        ? Math.log10(safeValue + 1) / Math.log10(safeMax + 1)
-        : safeValue / safeMax
+    const scaled = safeValue / safeMax
 
     const clamped = Math.max(0, Math.min(1, scaled))
     const barLength = Math.round(clamped * width)
