@@ -83,3 +83,9 @@ export function asciiBar(
     const barLength = Math.round(clamped * width)
     return '#'.repeat(barLength).padEnd(width, '.')
 }
+
+export function formatBigNumber(nb: number) {
+    return new Intl.NumberFormat('en-IN', {
+        maximumSignificantDigits: 3,
+    }).format(nb)
+}

@@ -20,6 +20,7 @@ import {
 import {
     asciiBar,
     formatBandwidth,
+    formatBigNumber,
     formatInterfaceStatus,
     formatSpeed,
     formatUptime,
@@ -75,11 +76,11 @@ app.get('/', async (req, res) => {
             const inBar = asciiBar(totalInBytes, maxInBytes, 18)
             const outBar = asciiBar(totalOutBytes, maxOutBytes, 18)
 
-            return `${point.date}  IN [${inBar}] ${totalInMb
-                .toFixed(0)
-                .padStart(10, '_')} MB  OUT [${outBar}] ${totalOutMb
-                .toFixed(0)
-                .padStart(10, '_')} MB`
+            return `${point.date}  IN [${inBar}] ${formatBigNumber(
+                totalInMb
+            ).padStart(10, '_')} MB  OUT [${outBar}] ${formatBigNumber(
+                totalOutMb
+            ).padStart(10, '_')} MB`
         })
 
         const interfaceName =
