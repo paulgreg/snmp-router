@@ -85,7 +85,7 @@ export function asciiBar(
 }
 
 export function formatBigNumber(nb: number) {
-    return new Intl.NumberFormat('en-IN', {
+    return new Intl.NumberFormat('en-US', {
         maximumSignificantDigits: 3,
     }).format(nb)
 }
