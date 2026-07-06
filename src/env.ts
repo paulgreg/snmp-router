@@ -9,7 +9,7 @@ export const COMMUNITY = process.env.COMMUNITY
 export const IF_INDEX = process.env.IF_INDEX
 export const DAYS_TO_KEEP = 14
 export const POLL_INTERVAL_SEC = 5
-export const DB_WRITE_INTERVAL_SEC = 60 * 60
+export const DB_WRITE_INTERVAL_SEC = 5 * 60
 
 console.info(
     'env:',
