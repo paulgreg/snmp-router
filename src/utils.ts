@@ -87,5 +87,80 @@ export function asciiBar(
 export function formatBigNumber(nb: number) {
     return new Intl.NumberFormat('en-US', {
         maximumSignificantDigits: 3,
-    }).format(nb)
+    })
+        .format(nb)
+        .padStart(10, '_')
+}
+
+export function formatPercentage(
+    inValue: number,
+    inPackets: number | null,
+    outValue: number = 0,
+    outPackets: number | null = null,
+    warningThreshold: number = 0.1
+): [string, string, string, string] {
+    if (!inPackets || inPackets === 0) {
+        if (!outPackets || outPackets === 0) {
+            return ['0.00%', '0.00%', '', '']
+        }
+        const outPercentage = (outValue / outPackets) * 100
+        const outWarning = outPercentage > warningThreshold ? ' ⚠️' : ''
+        return ['0.00%', outPercentage.toFixed(3) + '', '', outWarning]
+    }
+    const inPercentage = (inValue / inPackets) * 100
+    const inWarning = inPercentage > warningThreshold ? ' ⚠️' : ''
+    if (!outPackets || outPackets === 0) {
+        return [inPercentage.toFixed(3) + '', '0.00%', inWarning, '']
+    }
+    const outPercentage = (outValue / outPackets) * 100
+    const outWarning = outPercentage > warningThreshold ? ' ⚠️' : ''
+    return [
+        inPercentage.toFixed(3) + '',
+        outPercentage.toFixed(3) + '',
+        inWarning,
+        outWarning,
+    ]
+}
+
+export function formatErrorPercentage(
+    inErrors: number,
+    inPackets: number | null,
+    outErrors: number = 0,
+    outPackets: number | null = null
+): [string, string, string, string] {
+    return formatPercentage(inErrors, inPackets, outErrors, outPackets, 0.1)
+}
+
+export function formatDiscardPercentage(
+    inDiscards: number,
+    inPackets: number | null,
+    outDiscards: number = 0,
+    outPackets: number | null = null
+): [string, string, string, string] {
+    return formatPercentage(inDiscards, inPackets, outDiscards, outPackets, 0.01)
+}
+
+export function formatDateTime(date: Date = new Date()): string {
+    return date
+        .toLocaleString('en-US', {
+            timeZone: process.env.TZ || 'UTC',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        })
+        .replace(',', '')
+}
+
+export function formatDay(date: Date = new Date()): string {
+    return date
+        .toLocaleString('en-US', {
+            timeZone: process.env.TZ || 'UTC',
+            month: '2-digit',
+            day: '2-digit',
+        })
+        .replace(',', '')
 }

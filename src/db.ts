@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import type { SnmpPollData, DatabaseStats } from './types'
-import { DAYS_TO_KEEP } from './env'
+import { formatDateTime, formatDay } from './utils'
+import { DAYS_TO_KEEP, DEBUG } from './env'
 
 const path = './data/router.db'
 const db = new DatabaseSync(path)
@@ -38,6 +39,7 @@ const cleanUpOldData = () => {
     const deleteStmt = db.prepare(
         'DELETE FROM interface_metrics WHERE timestamp < ?'
     )
+    if (DEBUG) console.debug('delete', cutoffDate)
     deleteStmt.run(cutoffDate)
 }
 
@@ -87,12 +89,19 @@ export const getDatabaseStats = (interfaceIndex: number): DatabaseStats => {
         )
         .get(interfaceIndex) as { oldest: string | null; newest: string | null }
 
+    const oldest_timestamp = range?.oldest
+        ? formatDateTime(new Date(range.oldest))
+        : null
+    const newest_timestamp = range?.newest
+        ? formatDateTime(new Date(range.newest))
+        : null
+
     return {
         total_raw_points: totalRawPoints || 0,
         days_with_data: daysWithData || 0,
         current_day_points: currentDayPoints || 0,
-        oldest_timestamp: range?.oldest ?? null,
-        newest_timestamp: range?.newest ?? null,
+        oldest_timestamp,
+        newest_timestamp,
     }
 }
 
@@ -168,4 +177,84 @@ export const getDailyMetrics = (
             samples: row.samples || 0,
         }
     })
+}
+
+export const getHourlyMetrics = (
+    interfaceIndex: number,
+    hours: number
+): Array<{
+    date: string
+    total_in_bytes: number
+    total_out_bytes: number
+    total_in_errors: number
+    total_out_errors: number
+    total_in_packets: number
+    total_out_packets: number
+    total_in_discards: number
+    total_out_discards: number
+    samples: number
+}> => {
+    const stmt = db.prepare(`
+        WITH hourly AS (
+            SELECT
+                strftime('%H:00', timestamp) as date,
+                SUM(in_octets) as sum_in_octets,
+                SUM(out_octets) as sum_out_octets,
+                SUM(COALESCE(in_errors, 0)) as total_in_errors,
+                SUM(COALESCE(out_errors, 0)) as total_out_errors,
+                SUM(COALESCE(in_packets, 0)) as total_in_packets,
+                SUM(COALESCE(out_packets, 0)) as total_out_packets,
+                SUM(COALESCE(in_discards, 0)) as total_in_discards,
+                SUM(COALESCE(out_discards, 0)) as total_out_discards,
+                COUNT(*) as samples
+            FROM interface_metrics
+            WHERE interface_index = ?
+              AND timestamp >= datetime('now', '-' || ? || ' hours')
+            GROUP BY strftime('%m-%d %H:00', timestamp)
+        )
+        SELECT
+            date,
+            sum_in_octets - prev_sum_in_octets as total_in_bytes,
+            sum_out_octets - prev_sum_out_octets as total_out_bytes,
+            total_in_errors,
+            total_out_errors,
+            total_in_packets,
+            total_out_packets,
+            total_in_discards,
+            total_out_discards,
+            samples
+        FROM (
+            SELECT
+                date,
+                sum_in_octets,
+                sum_out_octets,
+                LAG(sum_in_octets) OVER (ORDER BY date) as prev_sum_in_octets,
+                LAG(sum_out_octets) OVER (ORDER BY date) as prev_sum_out_octets,
+                total_in_errors,
+                total_out_errors,
+                total_in_packets,
+                total_out_packets,
+                total_in_discards,
+                total_out_discards,
+                samples
+            FROM hourly
+        )
+        WHERE prev_sum_in_octets IS NOT NULL
+        ORDER BY date ASC
+    `)
+
+    const rows = stmt.all(interfaceIndex, hours) as unknown as Array<{
+        date: string
+        total_in_bytes: number
+        total_out_bytes: number
+        total_in_errors: number
+        total_out_errors: number
+        total_in_packets: number
+        total_out_packets: number
+        total_in_discards: number
+        total_out_discards: number
+        samples: number
+    }>
+
+    return rows
 }

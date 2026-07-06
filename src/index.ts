@@ -16,17 +16,27 @@ import {
     PORT,
     DB_WRITE_INTERVAL_SEC,
     POLL_INTERVAL_SEC,
+    DEBUG,
 } from './env'
 import {
     asciiBar,
     formatBandwidth,
     formatBigNumber,
+    formatDateTime,
+    formatDay,
+    formatDiscardPercentage,
+    formatErrorPercentage,
     formatInterfaceStatus,
     formatSpeed,
     formatUptime,
 } from './utils'
 import type { SystemStatus } from './types'
-import { initDb, getDatabaseStats, getDailyMetrics } from './db'
+import {
+    initDb,
+    getDatabaseStats,
+    getDailyMetrics,
+    getHourlyMetrics,
+} from './db'
 
 initDb()
 
@@ -39,6 +49,8 @@ const app = express()
 app.use(express.static(path.join(__dirname, '..', 'public')))
 app.set('view engine', 'ejs')
 app.set('views', path.join(__dirname, '..', 'views'))
+app.disable('x-powered-by')
+if (DEBUG) app.disable('view cache')
 
 app.get('/', async (req, res) => {
     try {
@@ -57,6 +69,7 @@ app.get('/', async (req, res) => {
             interfaceIndex,
             DAYS_TO_KEEP
         ).reverse()
+        const hourlyMetrics = getHourlyMetrics(interfaceIndex, 24).reverse()
 
         const maxInBytes = Math.max(
             1,
@@ -65,6 +78,22 @@ app.get('/', async (req, res) => {
         const maxOutBytes = Math.max(
             1,
             ...dailyMetrics.map((point) => point.total_out_bytes)
+        )
+        const maxInErrors = Math.max(
+            1,
+            ...dailyMetrics.map((point) => point.total_in_errors)
+        )
+        const maxOutErrors = Math.max(
+            1,
+            ...dailyMetrics.map((point) => point.total_out_errors)
+        )
+        const maxInDiscards = Math.max(
+            1,
+            ...dailyMetrics.map((point) => point.total_in_discards)
+        )
+        const maxOutDiscards = Math.max(
+            1,
+            ...dailyMetrics.map((point) => point.total_out_discards)
         )
 
         const dailyLines = dailyMetrics.map((point) => {
@@ -76,11 +105,126 @@ app.get('/', async (req, res) => {
             const inBar = asciiBar(totalInBytes, maxInBytes, 18)
             const outBar = asciiBar(totalOutBytes, maxOutBytes, 18)
 
+            const day = formatDay(new Date(point.date))
+
+            return `${day}  IN [${inBar}] ${formatBigNumber(
+                totalInMb
+            )} MB  OUT [${outBar}] ${formatBigNumber(totalOutMb)} MB`
+        })
+
+        const dailyErrorLines = dailyMetrics.map((point) => {
+            const inErrors = point.total_in_errors || 0
+            const outErrors = point.total_out_errors || 0
+
+            const inBar = asciiBar(inErrors, maxInErrors, 18)
+            const outBar = asciiBar(outErrors, maxOutErrors, 18)
+
+            const day = formatDay(new Date(point.date))
+
+            return `${day}  ERR [${inBar}] ${formatBigNumber(
+                inErrors
+            )}  [${outBar}] ${formatBigNumber(outErrors)}`
+        })
+
+        const dailyDiscardLines = dailyMetrics.map((point) => {
+            const inDiscards = point.total_in_discards || 0
+            const outDiscards = point.total_out_discards || 0
+
+            const inBar = asciiBar(inDiscards, maxInDiscards, 18)
+            const outBar = asciiBar(outDiscards, maxOutDiscards, 18)
+
+            const day = formatDay(new Date(point.date))
+
+            return `${day}  DSC [${inBar}] ${formatBigNumber(
+                inDiscards
+            )}  [${outBar}] ${formatBigNumber(outDiscards)}`
+        })
+
+        const maxHourlyInBytes = Math.max(
+            1,
+            ...hourlyMetrics.map((point) => point.total_in_bytes)
+        )
+        const maxHourlyOutBytes = Math.max(
+            1,
+            ...hourlyMetrics.map((point) => point.total_out_bytes)
+        )
+
+        const hourlyBandwidthLines = hourlyMetrics.map((point) => {
+            const totalInBytes = point.total_in_bytes || 0
+            const totalOutBytes = point.total_out_bytes || 0
+            const totalInMb = totalInBytes / (1024 * 1024)
+            const totalOutMb = totalOutBytes / (1024 * 1024)
+
+            const inBar = asciiBar(totalInBytes, maxHourlyInBytes, 18)
+            const outBar = asciiBar(totalOutBytes, maxHourlyOutBytes, 18)
+
             return `${point.date}  IN [${inBar}] ${formatBigNumber(
                 totalInMb
-            ).padStart(10, '_')} MB  OUT [${outBar}] ${formatBigNumber(
-                totalOutMb
-            ).padStart(10, '_')} MB`
+            )} MB  OUT [${outBar}] ${formatBigNumber(totalOutMb)} MB`
+        })
+
+        const maxHourlyInErrors = Math.max(
+            1,
+            ...hourlyMetrics.map((point) => point.total_in_errors)
+        )
+        const maxHourlyOutErrors = Math.max(
+            1,
+            ...hourlyMetrics.map((point) => point.total_out_errors)
+        )
+
+        const hourlyErrorLines = hourlyMetrics.map((point) => {
+            const inErrors = point.total_in_errors || 0
+            const outErrors = point.total_out_errors || 0
+            const inPackets = point.total_in_packets || 0
+            const outPackets = point.total_out_packets || 0
+
+            const [inPct, outPct, inWarn, outWarn] = formatErrorPercentage(
+                inErrors,
+                inPackets,
+                outErrors,
+                outPackets
+            )
+
+            const inBar = asciiBar(inErrors, maxHourlyInErrors, 18)
+            const outBar = asciiBar(outErrors, maxHourlyOutErrors, 18)
+
+            return `${point.date}  ERR [${inBar}] ${formatBigNumber(
+                inErrors
+            )}  [${outBar}] ${formatBigNumber(
+                outErrors
+            )}  (${inPct} %${inWarn} - ${outPct} %${outWarn})`
+        })
+
+        const maxHourlyInDiscards = Math.max(
+            1,
+            ...hourlyMetrics.map((point) => point.total_in_discards)
+        )
+        const maxHourlyOutDiscards = Math.max(
+            1,
+            ...hourlyMetrics.map((point) => point.total_out_discards)
+        )
+
+        const hourlyDiscardLines = hourlyMetrics.map((point) => {
+            const inDiscards = point.total_in_discards || 0
+            const outDiscards = point.total_out_discards || 0
+            const inPackets = point.total_in_packets || 0
+            const outPackets = point.total_out_packets || 0
+
+            const [inPct, outPct, inWarn, outWarn] = formatDiscardPercentage(
+                inDiscards,
+                inPackets,
+                outDiscards,
+                outPackets
+            )
+
+            const inBar = asciiBar(inDiscards, maxHourlyInDiscards, 18)
+            const outBar = asciiBar(outDiscards, maxHourlyOutDiscards, 18)
+
+            return `${point.date}  DSC [${inBar}] ${formatBigNumber(
+                inDiscards
+            )}  [${outBar}] ${formatBigNumber(
+                outDiscards
+            )}  (${inPct} %${inWarn} - ${outPct} %${outWarn})`
         })
 
         const interfaceName =
@@ -93,7 +237,7 @@ app.get('/', async (req, res) => {
 
         res.render('index', {
             title: 'Router Bandwidth',
-            generatedAt: new Date().toISOString(),
+            generatedAt: formatDateTime(new Date()),
             pollIntervalSeconds: POLL_INTERVAL_SEC,
             uptime: formatUptime(uptime),
             interface: {
@@ -105,6 +249,11 @@ app.get('/', async (req, res) => {
                 speedMbps: interfaceSpeed,
             },
             dailyLines,
+            dailyErrorLines,
+            dailyDiscardLines,
+            hourlyBandwidthLines,
+            hourlyErrorLines,
+            hourlyDiscardLines,
             daysToKeep: DAYS_TO_KEEP,
             databaseStats,
             endpoints: [
@@ -218,7 +367,7 @@ app.get('/api/status', async (req, res) => {
         const response: SystemStatus = {
             interfaces,
             uptime: formatUptime(uptime),
-            timestamp: new Date().toISOString(),
+            timestamp: formatDateTime(new Date()),
         }
 
         res.json(response)

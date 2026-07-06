@@ -242,6 +242,7 @@ async function fetchSnmp() {
 export async function pollSnmpAndInsertIntoDb() {
     const pollData = await fetchSnmp()
     if (pollData) {
+        if (DEBUG) console.debug('inserting', JSON.stringify(pollData))
         insertPollData(pollData)
     } else {
         console.error('no data inserted', new Date().toISOString())

@@ -68,13 +68,63 @@
                 </div>
             </section>
             <section class="card">
-                <h2>Daily trend (last <%= daysToKeep %> days)</h2>
+                <h2>🗓️ Daily bandwidth</h2>
                 <% if (dailyLines.length) { %>
                 <div class="trend-container">
                     <pre><%= dailyLines.join('\n') %></pre>
                 </div>
                 <% } else { %>
-                <p class="meta">No daily trend data yet.</p>
+                <p class="meta">No daily data yet.</p>
+                <% } %>
+            </section>
+            <section class="card">
+                <h2>⌚ Hourly bandwidth</h2>
+                <% if (hourlyBandwidthLines.length) { %>
+                <div class="trend-container">
+                    <pre><%= hourlyBandwidthLines.join('\n') %></pre>
+                </div>
+                <% } else { %>
+                <p class="meta">No hourly bandwidth data yet.</p>
+                <% } %>
+            </section>
+            <section class="card">
+                <h2>🗓️ Daily error</h2>
+                <% if (dailyErrorLines.length) { %>
+                <div class="trend-container">
+                    <pre><%= dailyErrorLines.join('\n') %></pre>
+                </div>
+                <% } else { %>
+                <p class="meta">No error data yet.</p>
+                <% } %>
+            </section>
+            <section class="card">
+                <h2>⌚ Hourly error</h2>
+                <% if (hourlyErrorLines.length) { %>
+                <div class="trend-container">
+                    <pre><%= hourlyErrorLines.join('\n') %></pre>
+                </div>
+                <% } else { %>
+                <p class="meta">No hourly error data yet.</p>
+                <% } %>
+            </section>
+            <section class="card">
+                <h2>🗓️ Daily discard</h2>
+                <% if (dailyDiscardLines.length) { %>
+                <div class="trend-container">
+                    <pre><%= dailyDiscardLines.join('\n') %></pre>
+                </div>
+                <% } else { %>
+                <p class="meta">No discard data yet.</p>
+                <% } %>
+            </section>
+            <section class="card">
+                <h2>⌚ Hourly discard</h2>
+                <% if (hourlyDiscardLines.length) { %>
+                <div class="trend-container">
+                    <pre><%= hourlyDiscardLines.join('\n') %></pre>
+                </div>
+                <% } else { %>
+                <p class="meta">No hourly discard data yet.</p>
                 <% } %>
             </section>
             <section class="card">
