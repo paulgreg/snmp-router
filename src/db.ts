@@ -197,50 +197,43 @@ export const getHourlyMetrics = (
     const stmt = db.prepare(`
         WITH hourly AS (
             SELECT
-                strftime('%H:00', timestamp) as date,
-                SUM(in_octets) as sum_in_octets,
-                SUM(out_octets) as sum_out_octets,
-                SUM(COALESCE(in_errors, 0)) as total_in_errors,
-                SUM(COALESCE(out_errors, 0)) as total_out_errors,
-                SUM(COALESCE(in_packets, 0)) as total_in_packets,
-                SUM(COALESCE(out_packets, 0)) as total_out_packets,
-                SUM(COALESCE(in_discards, 0)) as total_in_discards,
-                SUM(COALESCE(out_discards, 0)) as total_out_discards,
+                strftime('%Y-%m-%d %H:00', timestamp) as hour,
+                MIN(in_octets) as min_in_octets,
+                MAX(in_octets) as max_in_octets,
+                MIN(out_octets) as min_out_octets,
+                MAX(out_octets) as max_out_octets,
+                MIN(in_errors) as min_in_errors,
+                MAX(in_errors) as max_in_errors,
+                MIN(out_errors) as min_out_errors,
+                MAX(out_errors) as max_out_errors,
+                MIN(in_packets) as min_in_packets,
+                MAX(in_packets) as max_in_packets,
+                MIN(out_packets) as min_out_packets,
+                MAX(out_packets) as max_out_packets,
+                MIN(in_discards) as min_in_discards,
+                MAX(in_discards) as max_in_discards,
+                MIN(out_discards) as min_out_discards,
+                MAX(out_discards) as max_out_discards,
                 COUNT(*) as samples
             FROM interface_metrics
             WHERE interface_index = ?
-              AND timestamp >= datetime('now', '-' || ? || ' hours')
-            GROUP BY strftime('%m-%d %H:00', timestamp)
+              AND datetime(timestamp) >= datetime(strftime('%Y-%m-%d %H:00:00', 'now'), '-' || ? || ' hours')
+              AND datetime(timestamp) < datetime(strftime('%Y-%m-%d %H:00:00', 'now'))
+            GROUP BY hour
         )
         SELECT
-            date,
-            sum_in_octets - prev_sum_in_octets as total_in_bytes,
-            sum_out_octets - prev_sum_out_octets as total_out_bytes,
-            total_in_errors,
-            total_out_errors,
-            total_in_packets,
-            total_out_packets,
-            total_in_discards,
-            total_out_discards,
+            strftime('%H:00', hour) as date,
+            MAX(0, max_in_octets - min_in_octets) as total_in_bytes,
+            MAX(0, max_out_octets - min_out_octets) as total_out_bytes,
+            MAX(0, COALESCE(max_in_errors, 0) - COALESCE(min_in_errors, 0)) as total_in_errors,
+            MAX(0, COALESCE(max_out_errors, 0) - COALESCE(min_out_errors, 0)) as total_out_errors,
+            MAX(0, COALESCE(max_in_packets, 0) - COALESCE(min_in_packets, 0)) as total_in_packets,
+            MAX(0, COALESCE(max_out_packets, 0) - COALESCE(min_out_packets, 0)) as total_out_packets,
+            MAX(0, COALESCE(max_in_discards, 0) - COALESCE(min_in_discards, 0)) as total_in_discards,
+            MAX(0, COALESCE(max_out_discards, 0) - COALESCE(min_out_discards, 0)) as total_out_discards,
             samples
-        FROM (
-            SELECT
-                date,
-                sum_in_octets,
-                sum_out_octets,
-                LAG(sum_in_octets) OVER (ORDER BY date) as prev_sum_in_octets,
-                LAG(sum_out_octets) OVER (ORDER BY date) as prev_sum_out_octets,
-                total_in_errors,
-                total_out_errors,
-                total_in_packets,
-                total_out_packets,
-                total_in_discards,
-                total_out_discards,
-                samples
-            FROM hourly
-        )
-        WHERE prev_sum_in_octets IS NOT NULL
-        ORDER BY date ASC
+        FROM hourly
+        ORDER BY hour ASC
     `)
 
     const rows = stmt.all(interfaceIndex, hours) as unknown as Array<{
